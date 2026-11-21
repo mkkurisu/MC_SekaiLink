@@ -7,11 +7,13 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import java.io.File
 import java.net.Inet4Address
 
@@ -42,7 +44,12 @@ class ServerForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, buildNotification())
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildNotification(),
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
+        )
         acquireWakeLock()
         startDaemonIfNeeded()
         return START_STICKY
