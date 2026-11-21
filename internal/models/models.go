@@ -175,13 +175,25 @@ type ModrinthVersion struct {
 }
 
 type InstalledAddon struct {
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"` // "mod", "plugin", "datapack", "bedrock-resource", "bedrock-behavior", "geyser-pack"
-	Enabled   bool      `json:"enabled"`
-	SizeBytes int64     `json:"sizeBytes"`
-	ModTime   time.Time `json:"modTime"`
-	Path      string    `json:"path"`
-	UUID      string    `json:"uuid,omitempty"`
+	Name        string    `json:"name"`
+	Kind        string    `json:"kind"` // "mod", "plugin", "datapack", "bedrock-resource", "bedrock-behavior", "geyser-pack"
+	Enabled     bool      `json:"enabled"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	ModTime     time.Time `json:"modTime"`
+	Path        string    `json:"path"`
+	UUID        string    `json:"uuid,omitempty"`
+	AddonID     string    `json:"addonId,omitempty"`
+	DisplayName string    `json:"displayName,omitempty"`
+	Version     string    `json:"version,omitempty"`
+	MissingDeps []string  `json:"missingDeps,omitempty"`
+	Warnings    []string  `json:"warnings,omitempty"`
+}
+
+type AddonInstallResult struct {
+	Installed           []string `json:"installed"`
+	Dependencies        []string `json:"dependencies,omitempty"`
+	MissingDependencies []string `json:"missingDependencies,omitempty"`
+	Warnings            []string `json:"warnings,omitempty"`
 }
 
 type PackInfo struct {

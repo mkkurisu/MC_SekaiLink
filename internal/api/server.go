@@ -541,11 +541,15 @@ func (s *Server) handleInstallServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStartServer(w http.ResponseWriter, r *http.Request) {
-	if err := s.manager.Start(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	if inst, err := s.store.GetInstance(id); err == nil {
+		s.warnAddonIssuesToConsole(inst)
+	}
+	if err := s.manager.Start(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	inst, _ := s.store.GetInstance(r.PathValue("id"))
+	inst, _ := s.store.GetInstance(id)
 	writeJSON(w, http.StatusOK, inst)
 }
 
@@ -559,12 +563,34 @@ func (s *Server) handleStopServer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRestartServer(w http.ResponseWriter, r *http.Request) {
-	if err := s.manager.Restart(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	if inst, err := s.store.GetInstance(id); err == nil {
+		s.warnAddonIssuesToConsole(inst)
+	}
+	if err := s.manager.Restart(id); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	inst, _ := s.store.GetInstance(r.PathValue("id"))
+	inst, _ := s.store.GetInstance(id)
 	writeJSON(w, http.StatusOK, inst)
+}
+
+func (s *Server) warnAddonIssuesToConsole(inst models.ServerInstance) {
+	list, err := addons.ListInstalledAddons(inst)
+	if err != nil {
+		return
+	}
+	for _, item := range list {
+		if !item.Enabled {
+			continue
+		}
+		if len(item.MissingDeps) > 0 {
+			s.manager.AppendConsoleWarning(inst.ID, fmt.Sprintf("[MC SekaiLink] UYARI: '%s' icin eksik bagimlilik(lar): %s", item.Name, strings.Join(item.MissingDeps, ", ")))
+		}
+		for _, wMsg := range item.Warnings {
+			s.manager.AppendConsoleWarning(inst.ID, fmt.Sprintf("[MC SekaiLink] UYARI: '%s' -> %s", item.Name, wMsg))
+		}
+	}
 }
 
 func (s *Server) handleSendCommand(w http.ResponseWriter, r *http.Request) {
@@ -684,7 +710,12 @@ func (s *Server) handleOptimizeServerLag(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleModrinthSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	res, err := addons.SearchModrinth(r.Context(), q.Get("query"), q.Get("projectType"), q.Get("loader"), q.Get("mcVersion"), limit)
+	mcVer := q.Get("mcVersion")
+	loader := q.Get("loader")
+	if strings.EqualFold(q.Get("engine"), string(models.EngineNeoForge)) || strings.EqualFold(loader, "neoforge") {
+		mcVer = addons.EffectiveMCVersion(models.EngineNeoForge, mcVer)
+	}
+	res, err := addons.SearchModrinth(r.Context(), q.Get("query"), q.Get("projectType"), loader, mcVer, limit)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -694,7 +725,12 @@ func (s *Server) handleModrinthSearch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleModrinthVersions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	versions, err := addons.ListProjectVersions(r.Context(), r.PathValue("projectId"), q.Get("loader"), q.Get("mcVersion"))
+	loaders := addons.ExpandLoaderFilter(q.Get("loader"))
+	mcVer := q.Get("mcVersion")
+	if strings.EqualFold(q.Get("engine"), string(models.EngineNeoForge)) {
+		mcVer = addons.EffectiveMCVersion(models.EngineNeoForge, mcVer)
+	}
+	versions, err := addons.ListProjectVersions(r.Context(), r.PathValue("projectId"), loaders, mcVer)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -717,12 +753,12 @@ func (s *Server) handleInstallModrinth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	files, err := addons.InstallModrinthProject(r.Context(), inst, body.ProjectID, body.VersionID, body.Kind)
+	res, err := addons.InstallModrinthProject(r.Context(), inst, body.ProjectID, body.VersionID, body.Kind)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"installed": files})
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleListAddons(w http.ResponseWriter, r *http.Request) {
@@ -756,17 +792,26 @@ func (s *Server) handleUploadAddon(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	kind := r.FormValue("kind")
-	name, err := addons.InstallUploadedAddon(inst, header.Filename, file, kind)
+	name, destPaths, effectiveKind, err := addons.InstallUploadedAddonWithPath(inst, header.Filename, file, kind)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	installedList := []string{name}
-	destJar := filepath.Join(addons.TargetDirForAddonKind(inst, kind), name)
-	if deps, depErr := addons.EnsureFabricAPIForJar(r.Context(), inst, destJar); depErr == nil && len(deps) > 0 {
-		installedList = append(installedList, deps...)
+	var agg models.AddonInstallResult
+	agg.Installed = []string{name}
+	for _, dp := range destPaths {
+		depRes := addons.ResolveUploadedAddonDependencies(r.Context(), inst, dp, effectiveKind)
+		for _, d := range depRes.Dependencies {
+			agg.Dependencies = append(agg.Dependencies, d)
+		}
+		for _, md := range depRes.MissingDependencies {
+			agg.MissingDependencies = append(agg.MissingDependencies, md)
+		}
+		for _, wMsg := range depRes.Warnings {
+			agg.Warnings = append(agg.Warnings, wMsg)
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"installed": name, "dependencies": installedList[1:]})
+	writeJSON(w, http.StatusOK, agg)
 }
 
 func (s *Server) handleToggleAddon(w http.ResponseWriter, r *http.Request) {

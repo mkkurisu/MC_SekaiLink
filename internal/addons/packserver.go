@@ -164,7 +164,7 @@ func ExportClientMRPack(inst models.ServerInstance, destZip string) error {
 	defer zw.Close()
 
 	deps := map[string]string{
-		"minecraft": inst.MCVersion,
+		"minecraft": EffectiveMCVersion(inst.Engine, inst.MCVersion),
 	}
 	if inst.Engine == models.EngineFabric {
 		deps["fabric-loader"] = "0.16.9"

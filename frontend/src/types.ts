@@ -140,6 +140,18 @@ export interface InstalledAddon {
   modTime: string;
   path: string;
   uuid?: string;
+  addonId?: string;
+  displayName?: string;
+  version?: string;
+  missingDeps?: string[];
+  warnings?: string[];
+}
+
+export interface AddonInstallResult {
+  installed: string[];
+  dependencies?: string[];
+  missingDependencies?: string[];
+  warnings?: string[];
 }
 
 export interface PackInfo {

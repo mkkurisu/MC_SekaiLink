@@ -129,6 +129,10 @@ func (m *Manager) appendConsole(id, level, text string) {
 	m.broadcast(id, models.WSMessage{Type: "console", Data: line})
 }
 
+func (m *Manager) AppendConsoleWarning(id, text string) {
+	m.appendConsole(id, "WARN", text)
+}
+
 func (m *Manager) CreateServer(req models.ServerInstance) (models.ServerInstance, error) {
 	if strings.TrimSpace(req.Name) == "" {
 		return req, fmt.Errorf("sunucu adi bos olamaz")
@@ -188,7 +192,21 @@ func (m *Manager) InstallServer(ctx context.Context, id string) error {
 	m.broadcast(id, models.WSMessage{Type: "status", Data: inst.Status})
 
 	cfg := m.store.GetConfig()
-	javaInfo := DetectJava(firstNonEmpty(inst.JavaPath, cfg.JavaPath), m.store.DataDir())
+	javaInfo, reqMajor, sufficient := DetectJavaForMCVersion(inst.MCVersion, firstNonEmpty(inst.JavaPath, cfg.JavaPath), m.store.DataDir())
+	if inst.Engine == models.EngineNeoForge && (!javaInfo.Detected || !sufficient) {
+		var err error
+		if !javaInfo.Detected {
+			err = fmt.Errorf("NeoForge kurulumu icin Java %d+ bulunamadi! Ayarlardan 'Otomatik Java 25 Kur' butonuna tiklayin", reqMajor)
+		} else {
+			err = fmt.Errorf("NeoForge (%s) kurulumu icin Java %d+ gerekli (bulunan: Java %d). Ayarlardan 'Otomatik Java 25 Kur' butonuna tiklayin", inst.MCVersion, reqMajor, javaInfo.Major)
+		}
+		inst.Status = models.StatusError
+		inst.LastError = err.Error()
+		_ = m.store.SaveInstance(inst)
+		m.appendConsole(id, "ERROR", "[Kurulum Hatasi] "+err.Error())
+		m.broadcast(id, models.WSMessage{Type: "status", Data: inst.Status})
+		return err
+	}
 
 	progress := func(msg string) {
 		m.appendConsole(id, "INFO", "[Kurulum] "+msg)
@@ -486,6 +504,8 @@ func extractCrashSummary(cs *consoleState) string {
 			strings.HasPrefix(lower, "- mod ") ||
 			strings.HasPrefix(lower, "- install ") ||
 			strings.Contains(lower, "incompatible mods") ||
+			strings.Contains(lower, "missing or unsupported mandatory dependencies") ||
+			strings.Contains(lower, "unknowndependencyexception") ||
 			strings.Contains(lower, "caused by:") ||
 			strings.Contains(lower, "unsupportedclassversionerror") ||
 			strings.Contains(lower, "failed to bind") ||

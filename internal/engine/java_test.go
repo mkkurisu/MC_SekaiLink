@@ -24,16 +24,19 @@ func TestParseJavaMajor(t *testing.T) {
 
 func TestRequiredJavaMajor(t *testing.T) {
 	cases := map[string]int{
-		"26.3":    25,
-		"26.2":    25,
-		"26.1.2":  25,
-		"1.21.11": 21,
-		"1.21.4":  21,
-		"1.20.6":  21,
-		"1.20.4":  17,
-		"1.18.2":  17,
-		"1.17.1":  16,
-		"latest":  21,
+		"26.3":      25,
+		"26.2":      25,
+		"26.2.0.95": 25,
+		"26.1.2":    25,
+		"21.1.209":  21,
+		"20.4.237":  17,
+		"1.21.11":   21,
+		"1.21.4":    21,
+		"1.20.6":    21,
+		"1.20.4":    17,
+		"1.18.2":    17,
+		"1.17.1":    16,
+		"latest":    21,
 	}
 	for mcVer, want := range cases {
 		if got := RequiredJavaMajor(mcVer); got != want {

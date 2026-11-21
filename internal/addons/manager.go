@@ -17,10 +17,13 @@ import (
 func TargetDirForAddonKind(inst models.ServerInstance, kind string) string {
 	switch kind {
 	case "datapack":
-		props, _ := engine.ReadProperties(inst.Path)
-		worldName := props["level-name"]
+		var worldName string
+		if _, err := os.Stat(filepath.Join(inst.Path, "server.properties")); err == nil {
+			props, _ := engine.ReadProperties(inst.Path)
+			worldName = strings.TrimSpace(props["level-name"])
+		}
 		if worldName == "" {
-			worldName = inst.ActiveWorld
+			worldName = strings.TrimSpace(inst.ActiveWorld)
 		}
 		if worldName == "" {
 			worldName = "world"
@@ -34,6 +37,9 @@ func TargetDirForAddonKind(inst models.ServerInstance, kind string) string {
 		}
 		return filepath.Join(inst.Path, "plugins")
 	case "mod":
+		if inst.Engine == models.EnginePaper || inst.Engine == models.EnginePurpur || inst.Engine == models.EnginePowerNukkitX {
+			return filepath.Join(inst.Path, "plugins")
+		}
 		return filepath.Join(inst.Path, "mods")
 	case "geyser-pack":
 		if inst.Engine == models.EngineFabric {
@@ -101,7 +107,7 @@ func ListInstalledAddons(inst models.ServerInstance) ([]models.InstalledAddon, e
 		}
 	}
 
-	// Bedrock BDS packs
+	// Bedrock packs (BDS & PowerNukkitX)
 	for _, pair := range []struct {
 		dir  string
 		kind string
@@ -137,71 +143,91 @@ func ListInstalledAddons(inst models.ServerInstance) ([]models.InstalledAddon, e
 	}
 
 	if list == nil {
-		list = []models.InstalledAddon{}
+		return []models.InstalledAddon{}, nil
 	}
-	return list, nil
+	return AnalyzeInstalledAddons(inst, list), nil
 }
 
 func InstallUploadedAddon(inst models.ServerInstance, filename string, src io.Reader, kind string) (string, error) {
+	name, _, _, err := InstallUploadedAddonWithPath(inst, filename, src, kind)
+	return name, err
+}
+
+func InstallUploadedAddonWithPath(inst models.ServerInstance, filename string, src io.Reader, kind string) (name string, installedPaths []string, effectiveKind string, err error) {
 	safeName := filepath.Base(strings.TrimSpace(filename))
 	lower := strings.ToLower(safeName)
 
 	if strings.HasSuffix(lower, ".mcpack") || strings.HasSuffix(lower, ".mcaddon") {
 		tmpFile, err := os.CreateTemp("", "sekailink-mcpack-*"+filepath.Ext(safeName))
 		if err != nil {
-			return "", err
+			return "", nil, kind, err
 		}
 		tmpPath := tmpFile.Name()
 		if _, err := io.Copy(tmpFile, src); err != nil {
 			tmpFile.Close()
 			_ = os.Remove(tmpPath)
-			return "", err
+			return "", nil, kind, err
 		}
 		tmpFile.Close()
 		defer os.Remove(tmpPath)
 
-		if inst.Engine == models.EngineBDS {
-			if err := installBedrockArchive(inst, safeName, tmpPath); err != nil {
-				return "", err
+		if inst.Engine == models.EngineBDS || inst.Engine == models.EnginePowerNukkitX {
+			destDirs, err := installBedrockArchive(inst, safeName, tmpPath, inst.Engine == models.EngineBDS)
+			if err != nil {
+				return "", nil, "bedrock-resource", err
 			}
-			return safeName, nil
+			return safeName, destDirs, "bedrock-resource", nil
 		}
-		// GeyserMC accepts .mcpack directly inside its packs/ folder
+		// Java engines with GeyserMC accept .mcpack directly inside Geyser's packs/ folder
 		geyserDir := TargetDirForAddonKind(inst, "geyser-pack")
 		if err := os.MkdirAll(geyserDir, 0o755); err != nil {
-			return "", err
+			return "", nil, "geyser-pack", err
 		}
 		dest := filepath.Join(geyserDir, safeName)
 		in, err := os.Open(tmpPath)
 		if err != nil {
-			return "", err
+			return "", nil, "geyser-pack", err
 		}
 		defer in.Close()
 		out, err := os.Create(dest)
 		if err != nil {
-			return "", err
+			return "", nil, "geyser-pack", err
 		}
 		defer out.Close()
 		if _, err := io.Copy(out, in); err != nil {
-			return "", err
+			return "", nil, "geyser-pack", err
 		}
-		return safeName, nil
+		return safeName, []string{dest}, "geyser-pack", nil
 	}
 
-	destDir := TargetDirForAddonKind(inst, kind)
+	if inst.Engine == models.EngineBDS {
+		return "", nil, kind, fmt.Errorf("resmi Bedrock (BDS) yalnizca .mcpack veya .mcaddon dosyalarini destekler")
+	}
+	if inst.Engine == models.EngineVanilla {
+		if strings.HasSuffix(lower, ".jar") {
+			return "", nil, kind, fmt.Errorf("Vanilla sunucu .jar mod veya eklenti desteklemez; yalnizca datapack (.zip) yukleyebilirsiniz")
+		}
+		effectiveKind = "datapack"
+	} else if strings.HasSuffix(lower, ".jar") && (kind == "" || kind == "datapack") {
+		effectiveKind = normalizeTargetKind(inst.Engine, "")
+	} else {
+		effectiveKind = normalizeTargetKind(inst.Engine, kind)
+	}
+
+	destDir := TargetDirForAddonKind(inst, effectiveKind)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", err
+		return "", nil, effectiveKind, err
 	}
 	destPath := filepath.Join(destDir, safeName)
 	out, err := os.Create(destPath)
 	if err != nil {
-		return "", err
+		return "", nil, effectiveKind, err
 	}
 	defer out.Close()
 	if _, err := io.Copy(out, src); err != nil {
-		return "", err
+		return "", nil, effectiveKind, err
 	}
-	return safeName, nil
+	return safeName, []string{destPath}, effectiveKind, nil
 }
 
 func ToggleAddon(inst models.ServerInstance, relPath string) (bool, error) {
@@ -221,6 +247,17 @@ func DeleteAddon(inst models.ServerInstance, relPath string) error {
 	target, err := resolveInsideServer(inst.Path, relPath)
 	if err != nil {
 		return err
+	}
+	slashRel := filepath.ToSlash(relPath)
+	if strings.HasPrefix(slashRel, "resource_packs/") || strings.HasPrefix(slashRel, "behavior_packs/") {
+		if uuid := readPackUUID(filepath.Join(target, "manifest.json")); uuid != "" {
+			worldName := resolveBedrockWorldName(inst)
+			jsonName := "world_resource_packs.json"
+			if strings.HasPrefix(slashRel, "behavior_packs/") {
+				jsonName = "world_behavior_packs.json"
+			}
+			_ = unregisterWorldPackJSON(filepath.Join(inst.Path, "worlds", worldName, jsonName), uuid)
+		}
 	}
 	return os.RemoveAll(target)
 }
@@ -250,15 +287,62 @@ type bedrockWorldPackEntry struct {
 	Version []int  `json:"version"`
 }
 
-func installBedrockArchive(inst models.ServerInstance, filename, archivePath string) error {
+func resolveBedrockWorldName(inst models.ServerInstance) string {
+	if _, err := os.Stat(filepath.Join(inst.Path, "server.properties")); err == nil {
+		if props, err := engine.ReadProperties(inst.Path); err == nil {
+			if worldName := strings.TrimSpace(props["level-name"]); worldName != "" {
+				return worldName
+			}
+		}
+	}
+	if w := strings.TrimSpace(inst.ActiveWorld); w != "" {
+		return w
+	}
+	return "Bedrock level"
+}
+
+func trimBedrockArchiveExt(filename string) string {
+	lower := strings.ToLower(filename)
+	if strings.HasSuffix(lower, ".mcaddon") {
+		return filename[:len(filename)-len(".mcaddon")]
+	}
+	if strings.HasSuffix(lower, ".mcpack") {
+		return filename[:len(filename)-len(".mcpack")]
+	}
+	if strings.HasSuffix(lower, ".zip") {
+		return filename[:len(filename)-len(".zip")]
+	}
+	return filename
+}
+
+func installBedrockArchive(inst models.ServerInstance, filename, archivePath string, registerWorldJSON bool) ([]string, error) {
 	tmpDir, err := os.MkdirTemp("", "sekailink-bpack-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(tmpDir)
 
 	if err := worlds.ExtractZipSafe(archivePath, tmpDir); err != nil {
-		return err
+		return nil, err
+	}
+
+	// Many .mcaddon bundles contain nested .mcpack or .zip archives instead of unzipped folders.
+	var nestedArchives []string
+	_ = filepath.WalkDir(tmpDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		lower := strings.ToLower(d.Name())
+		if strings.HasSuffix(lower, ".mcpack") || strings.HasSuffix(lower, ".zip") {
+			nestedArchives = append(nestedArchives, path)
+		}
+		return nil
+	})
+	for idx, nested := range nestedArchives {
+		subDir := filepath.Join(tmpDir, fmt.Sprintf("__nested_%d", idx))
+		if err := os.MkdirAll(subDir, 0o755); err == nil {
+			_ = worlds.ExtractZipSafe(nested, subDir)
+		}
 	}
 
 	var manifests []string
@@ -269,14 +353,11 @@ func installBedrockArchive(inst models.ServerInstance, filename, archivePath str
 		return nil
 	})
 	if len(manifests) == 0 {
-		return fmt.Errorf("Bedrock manifest.json bulunamadi")
+		return nil, fmt.Errorf("Bedrock manifest.json bulunamadi")
 	}
 
-	props, _ := engine.ReadProperties(inst.Path)
-	worldName := props["level-name"]
-	if worldName == "" {
-		worldName = "Bedrock level"
-	}
+	worldName := resolveBedrockWorldName(inst)
+	var destDirs []string
 
 	for idx, mPath := range manifests {
 		raw, err := os.ReadFile(mPath)
@@ -284,7 +365,7 @@ func installBedrockArchive(inst models.ServerInstance, filename, archivePath str
 			continue
 		}
 		var mf bedrockManifest
-		if err := json.Unmarshal(raw, &mf); err != nil || mf.Header.UUID == "" {
+		if err := json.Unmarshal(stripJSONCommentsAndBOM(raw), &mf); err != nil || mf.Header.UUID == "" {
 			continue
 		}
 		packKind := "resource"
@@ -295,7 +376,7 @@ func installBedrockArchive(inst models.ServerInstance, filename, archivePath str
 			}
 		}
 		packRoot := filepath.Dir(mPath)
-		folderBase := strings.TrimSuffix(strings.TrimSuffix(filename, ".mcaddon"), ".mcpack")
+		folderBase := trimBedrockArchiveExt(filename)
 		if len(manifests) > 1 {
 			folderBase = fmt.Sprintf("%s_%d", folderBase, idx+1)
 		}
@@ -308,14 +389,20 @@ func installBedrockArchive(inst models.ServerInstance, filename, archivePath str
 		destDir := filepath.Join(inst.Path, subDir, folderBase)
 		_ = os.RemoveAll(destDir)
 		if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
-			return err
+			return nil, err
 		}
 		if err := copyPackDir(packRoot, destDir); err != nil {
-			return err
+			return nil, err
 		}
-		_ = registerWorldPackJSON(filepath.Join(inst.Path, "worlds", worldName, jsonName), mf.Header.UUID, mf.Header.Version)
+		destDirs = append(destDirs, destDir)
+		if registerWorldJSON {
+			_ = registerWorldPackJSON(filepath.Join(inst.Path, "worlds", worldName, jsonName), mf.Header.UUID, mf.Header.Version)
+		}
 	}
-	return nil
+	if len(destDirs) == 0 {
+		return nil, fmt.Errorf("gecerli Bedrock paketi (header.uuid) bulunamadi")
+	}
+	return destDirs, nil
 }
 
 func registerWorldPackJSON(jsonPath, uuid string, version []int) error {
@@ -327,7 +414,7 @@ func registerWorldPackJSON(jsonPath, uuid string, version []int) error {
 		_ = json.Unmarshal(raw, &entries)
 	}
 	for _, e := range entries {
-		if e.PackID == uuid {
+		if strings.EqualFold(e.PackID, uuid) {
 			return nil
 		}
 	}
@@ -345,13 +432,35 @@ func registerWorldPackJSON(jsonPath, uuid string, version []int) error {
 	return os.WriteFile(jsonPath, out, 0o644)
 }
 
+func unregisterWorldPackJSON(jsonPath, uuid string) error {
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil
+	}
+	var entries []bedrockWorldPackEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return err
+	}
+	filtered := make([]bedrockWorldPackEntry, 0, len(entries))
+	for _, e := range entries {
+		if !strings.EqualFold(e.PackID, uuid) {
+			filtered = append(filtered, e)
+		}
+	}
+	out, err := json.MarshalIndent(filtered, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(jsonPath, out, 0o644)
+}
+
 func readPackUUID(manifestPath string) string {
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return ""
 	}
 	var mf bedrockManifest
-	if err := json.Unmarshal(raw, &mf); err != nil {
+	if err := json.Unmarshal(stripJSONCommentsAndBOM(raw), &mf); err != nil {
 		return ""
 	}
 	return mf.Header.UUID

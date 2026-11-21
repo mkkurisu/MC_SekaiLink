@@ -71,6 +71,12 @@ func RequiredJavaMajor(mcVersion string) int {
 	if p0 >= 26 {
 		return 25
 	}
+	if p0 == 20 && p1 <= 4 {
+		return 17
+	}
+	if p0 >= 20 {
+		return 21
+	}
 	if p0 == 1 {
 		if p1 >= 21 || (p1 == 20 && p2 >= 5) {
 			return 21
