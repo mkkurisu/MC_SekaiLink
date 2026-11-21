@@ -24,6 +24,7 @@ func main() {
 	dataDirFlag := flag.String("data-dir", "", "Writable data directory path")
 	flag.Parse()
 
+	network.InitTLSRootCAs()
 	network.InitDNSResolver()
 
 	store, err := storage.NewStore(*dataDirFlag)

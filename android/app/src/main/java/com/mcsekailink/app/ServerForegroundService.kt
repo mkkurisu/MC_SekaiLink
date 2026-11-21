@@ -12,10 +12,15 @@ import android.net.ConnectivityManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import java.io.File
 import java.net.Inet4Address
+import java.security.KeyStore
+import java.security.cert.X509Certificate
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 class ServerForegroundService : Service() {
 
@@ -97,6 +102,15 @@ class ServerForegroundService : Service() {
         env["HOME"] = filesDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
 
+        val caBundle = exportAndroidCaBundle(File(cacheDir, "cacerts.pem"))
+        if (caBundle != null) {
+            env["SSL_CERT_FILE"] = caBundle.absolutePath
+        }
+        val certDirs = detectAndroidCertDirs()
+        if (certDirs.isNotEmpty()) {
+            env["SSL_CERT_DIR"] = certDirs
+        }
+
         try {
             daemonProcess = pb.start()
         } catch (_: Exception) {
@@ -139,6 +153,63 @@ class ServerForegroundService : Service() {
         } catch (_: Exception) {
             "1.1.1.1,8.8.8.8"
         }
+    }
+
+    private fun exportAndroidCaBundle(destFile: File): File? {
+        return try {
+            val certs = linkedSetOf<X509Certificate>()
+            val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+                init(null as KeyStore?)
+            }
+            for (tm in tmf.trustManagers) {
+                if (tm is X509TrustManager) {
+                    tm.acceptedIssuers?.forEach { certs.add(it) }
+                }
+            }
+            if (certs.isEmpty()) {
+                val ks = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
+                val aliases = ks.aliases()
+                while (aliases.hasMoreElements()) {
+                    val cert = ks.getCertificate(aliases.nextElement())
+                    if (cert is X509Certificate) {
+                        certs.add(cert)
+                    }
+                }
+            }
+            if (certs.isEmpty()) {
+                return null
+            }
+
+            val tmpFile = File(destFile.parentFile, "${destFile.name}.tmp")
+            tmpFile.bufferedWriter(Charsets.UTF_8).use { writer ->
+                for (cert in certs) {
+                    val b64 = Base64.encodeToString(cert.encoded, Base64.DEFAULT).trim()
+                    writer.append("-----BEGIN CERTIFICATE-----\n")
+                    writer.append(b64)
+                    writer.append("\n-----END CERTIFICATE-----\n")
+                }
+            }
+            if (!tmpFile.renameTo(destFile)) {
+                tmpFile.copyTo(destFile, overwrite = true)
+                tmpFile.delete()
+            }
+            if (destFile.exists() && destFile.length() > 0L) destFile else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun detectAndroidCertDirs(): String {
+        val candidates = listOf(
+            "/apex/com.android.conscrypt/cacerts",
+            "/system/etc/security/cacerts",
+            "/data/misc/user/0/cacerts-added",
+            "/data/misc/keychain/certs-added"
+        )
+        return candidates.filter { path ->
+            val dir = File(path)
+            dir.isDirectory && !dir.list().isNullOrEmpty()
+        }.joinToString(":")
     }
 
     private fun acquireWakeLock() {

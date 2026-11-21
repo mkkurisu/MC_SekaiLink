@@ -8,6 +8,7 @@ require (
 	github.com/quic-go/quic-go v0.65.0
 	github.com/shirou/gopsutil/v4 v4.25.2
 	github.com/wailsapp/wails/v2 v2.17.1
+	golang.org/x/crypto/x509roots/fallback v0.0.0-20261115193255-739070949446
 )
 
 require (
