@@ -29,6 +29,9 @@ func TargetDirForAddonKind(inst models.ServerInstance, kind string) string {
 	case "resourcepack", "shader":
 		return filepath.Join(inst.Path, "sekailink_packs")
 	case "plugin":
+		if inst.Engine == models.EngineFabric || inst.Engine == models.EngineNeoForge {
+			return filepath.Join(inst.Path, "mods")
+		}
 		return filepath.Join(inst.Path, "plugins")
 	case "mod":
 		return filepath.Join(inst.Path, "mods")

@@ -184,3 +184,23 @@ func TestBuildLivePropertyCommands(t *testing.T) {
 		t.Fatalf("expected no-op for unchanged properties, got cmds=%v applied=%v", noCmds, noApplied)
 	}
 }
+
+func TestExtractCrashSummaryFabric(t *testing.T) {
+	cs := newConsoleState()
+	lines := []struct{ lvl, txt string }{
+		{"INFO", "[00:03:22] [main/INFO]: Loading Minecraft 26.2 with Fabric Loader 0.20.1"},
+		{"ERROR", "[00:03:23] [main/ERROR]: Incompatible mods found!"},
+		{"ERROR", "net.fabricmc.loader.impl.FormattedException: Some of your mods are incompatible with the game or each other!"},
+		{"INFO", "\t - Mod 'Vein Miner' (mr_vein_miner) 26.x requires any version of fabric-resource-loader-v0, which is missing!"},
+		{"INFO", "\tat net.fabricmc.loader.impl.FormattedException.ofLocalized(FormattedException.java:51)"},
+		{"INFO", "\tat net.fabricmc.loader.impl.FabricLoaderImpl.load(FabricLoaderImpl.java:207)"},
+		{"INFO", "\tat net.fabricmc.loader.impl.launch.knot.Knot.init(Knot.java:142)"},
+	}
+	for _, l := range lines {
+		cs.lines = append(cs.lines, models.ConsoleLine{Level: l.lvl, Text: l.txt})
+	}
+	got := extractCrashSummary(cs)
+	if !strings.Contains(got, "requires any version of fabric-resource-loader-v0") {
+		t.Fatalf("expected Fabric missing dependency line, got %q", got)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -368,7 +369,17 @@ func installFabric(ctx context.Context, mcVersion, serverDir string, progress fu
 	}
 	dl := fmt.Sprintf("https://meta.fabricmc.net/v2/versions/loader/%s/%s/%s/server/jar", mcVersion, loaderVer, instVer)
 	progress(fmt.Sprintf("Fabric %s (loader %s) indiriliyor...", mcVersion, loaderVer))
-	return downloadToFile(ctx, dl, filepath.Join(serverDir, "server.jar"))
+	if err := downloadToFile(ctx, dl, filepath.Join(serverDir, "server.jar")); err != nil {
+		return err
+	}
+
+	modsDir := filepath.Join(serverDir, "mods")
+	_ = os.MkdirAll(modsDir, 0o755)
+	progress(fmt.Sprintf("Fabric API (%s) indiriliyor...", mcVersion))
+	if err := installModrinthLatest(ctx, "fabric-api", "fabric", mcVersion, modsDir); err != nil {
+		progress(fmt.Sprintf("Uyari: Fabric API (%s) otomatik indirilemedi: %v", mcVersion, err))
+	}
+	return nil
 }
 
 func installVanilla(ctx context.Context, mcVersion, serverDir string, progress func(string)) error {
@@ -553,7 +564,7 @@ func installCrossPlayPlugins(ctx context.Context, inst models.ServerInstance, pr
 
 	if inst.CrossPlay.ViaVersion && (inst.Engine == models.EnginePaper || inst.Engine == models.EnginePurpur) {
 		progress("ViaVersion (coklu surum destegi) indiriliyor...")
-		_ = installModrinthLatest(ctx, "viaversion", "paper", destDir)
+		_ = installModrinthLatest(ctx, "viaversion", "paper", "", destDir)
 	}
 
 	// Pre-configure Geyser port & Floodgate auth
@@ -588,15 +599,34 @@ floodgate-key-file: key.pem
 	return nil
 }
 
-func installModrinthLatest(ctx context.Context, slug, loader, destDir string) error {
+func installModrinthLatest(ctx context.Context, slug, loader, mcVersion, destDir string) error {
 	var versions []models.ModrinthVersion
-	u := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?loaders=%%5B%%22%s%%22%%5D", slug, loader)
-	if err := getJSON(ctx, u, &versions); err != nil || len(versions) == 0 {
+	params := url.Values{}
+	if loader != "" {
+		b, _ := json.Marshal([]string{loader})
+		params.Set("loaders", string(b))
+	}
+	if mcVersion != "" && mcVersion != "latest" {
+		b, _ := json.Marshal([]string{mcVersion})
+		params.Set("game_versions", string(b))
+	}
+	u := fmt.Sprintf("https://api.modrinth.com/v2/project/%s/version?%s", url.PathEscape(slug), params.Encode())
+	if err := getJSON(ctx, u, &versions); err != nil {
 		return err
 	}
-	for _, f := range versions[0].Files {
+	if len(versions) == 0 {
+		return fmt.Errorf("Modrinth %s icin uygun surum bulunamadi", slug)
+	}
+	chosen := versions[0]
+	for _, v := range versions {
+		if strings.EqualFold(v.VersionType, "release") {
+			chosen = v
+			break
+		}
+	}
+	for _, f := range chosen.Files {
 		if f.Primary || strings.HasSuffix(strings.ToLower(f.Filename), ".jar") {
-			return downloadToFile(ctx, f.URL, filepath.Join(destDir, f.Filename))
+			return downloadToFile(ctx, f.URL, filepath.Join(destDir, filepath.Base(f.Filename)))
 		}
 	}
 	return nil

@@ -167,6 +167,7 @@ type ModrinthVersion struct {
 	ProjectID     string               `json:"project_id"`
 	Name          string               `json:"name"`
 	VersionNumber string               `json:"version_number"`
+	VersionType   string               `json:"version_type,omitempty"`
 	GameVersions  []string             `json:"game_versions"`
 	Loaders       []string             `json:"loaders"`
 	Files         []ModrinthFile       `json:"files"`

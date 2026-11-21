@@ -12,7 +12,18 @@ interface Props {
 export const AddonsPage: React.FC<Props> = ({ server, lang }) => {
   const t = translations[lang].addons;
   const [tab, setTab] = useState<'store' | 'installed'>('store');
-  const [projectType, setProjectType] = useState<'mod' | 'plugin' | 'datapack'>('plugin');
+  const allowedTypes: ('plugin' | 'mod' | 'datapack')[] =
+    !server
+      ? ['plugin', 'mod', 'datapack']
+      : server.engine === 'fabric' || server.engine === 'neoforge'
+        ? ['mod', 'datapack']
+        : server.engine === 'paper' || server.engine === 'purpur'
+          ? ['plugin', 'datapack']
+          : server.engine === 'vanilla'
+            ? ['datapack']
+            : ['plugin', 'datapack'];
+
+  const [projectType, setProjectType] = useState<'mod' | 'plugin' | 'datapack'>(allowedTypes[0]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<ModrinthHit[]>([]);
   const [searching, setSearching] = useState(false);
@@ -179,7 +190,7 @@ export const AddonsPage: React.FC<Props> = ({ server, lang }) => {
         <div className="space-y-4">
           <div className="glass-card flex flex-wrap items-center gap-3 rounded-2xl p-4">
             <div className="flex rounded-xl bg-slate-950/70 p-1">
-              {(['plugin', 'mod', 'datapack'] as const).map((k) => (
+              {allowedTypes.map((k) => (
                 <button
                   key={k}
                   onClick={() => setProjectType(k)}

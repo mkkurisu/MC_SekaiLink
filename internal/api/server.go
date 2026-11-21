@@ -761,7 +761,12 @@ func (s *Server) handleUploadAddon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"installed": name})
+	installedList := []string{name}
+	destJar := filepath.Join(addons.TargetDirForAddonKind(inst, kind), name)
+	if deps, depErr := addons.EnsureFabricAPIForJar(r.Context(), inst, destJar); depErr == nil && len(deps) > 0 {
+		installedList = append(installedList, deps...)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"installed": name, "dependencies": installedList[1:]})
 }
 
 func (s *Server) handleToggleAddon(w http.ResponseWriter, r *http.Request) {

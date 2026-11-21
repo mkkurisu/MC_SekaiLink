@@ -467,26 +467,43 @@ func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string
 func extractCrashSummary(cs *consoleState) string {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	var fallback string
+
+	isStackFrame := func(s string) bool {
+		return strings.HasPrefix(s, "at ") || strings.HasPrefix(s, "... ") || strings.HasPrefix(s, "Suppressed:")
+	}
+
+	var specificCause, errFallback, plainFallback string
 	for i := len(cs.lines) - 1; i >= 0; i-- {
 		txt := strings.TrimSpace(cs.lines[i].Text)
-		if txt == "" || strings.HasPrefix(txt, "[MC SekaiLink]") {
+		if txt == "" || strings.HasPrefix(txt, "[MC SekaiLink]") || isStackFrame(txt) {
 			continue
 		}
-		if fallback == "" {
-			fallback = txt
+		if plainFallback == "" {
+			plainFallback = txt
 		}
-		if cs.lines[i].Level == "ERROR" || strings.Contains(strings.ToLower(txt), "error") || strings.Contains(strings.ToLower(txt), "requires") {
-			if len(txt) > 220 {
-				return txt[:220] + "..."
-			}
-			return txt
+		lower := strings.ToLower(txt)
+		if specificCause == "" && (strings.Contains(lower, "requires ") ||
+			strings.HasPrefix(lower, "- mod ") ||
+			strings.HasPrefix(lower, "- install ") ||
+			strings.Contains(lower, "incompatible mods") ||
+			strings.Contains(lower, "caused by:") ||
+			strings.Contains(lower, "unsupportedclassversionerror") ||
+			strings.Contains(lower, "failed to bind") ||
+			strings.Contains(lower, "missing ") ||
+			strings.Contains(lower, "could not load")) {
+			specificCause = txt
+			break
+		}
+		if errFallback == "" && (cs.lines[i].Level == "ERROR" || strings.Contains(lower, "error") || strings.Contains(lower, "exception") || strings.Contains(lower, "failed")) {
+			errFallback = txt
 		}
 	}
-	if len(fallback) > 220 {
-		return fallback[:220] + "..."
+
+	res := firstNonEmpty(specificCause, errFallback, plainFallback)
+	if len(res) > 220 {
+		return res[:220] + "..."
 	}
-	return fallback
+	return res
 }
 
 func findNeoForgeArgsFile(serverDir string) string {
