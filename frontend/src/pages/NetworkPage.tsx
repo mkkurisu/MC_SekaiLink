@@ -69,6 +69,8 @@ export const NetworkPage: React.FC<Props> = ({
       }
       await apiFetch('/api/network/playit/start', { method: 'POST' });
       onRefreshTunnel();
+      setTimeout(onRefreshTunnel, 1500);
+      setTimeout(onRefreshTunnel, 3500);
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : 'playit hatasi');
     } finally {

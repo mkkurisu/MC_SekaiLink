@@ -8,10 +8,19 @@ import (
 
 func TestParsePlayitOutputLine(t *testing.T) {
 	var st models.TunnelState
-	ParsePlayitOutputLine("Visit link to claim agent: https://playit.gg/claim/ab12cd34ef", &st)
-	if st.ClaimURL != "https://playit.gg/claim/ab12cd34ef" {
+	ParsePlayitOutputLine("https://playit.gg/claim/5c9953786b", &st)
+	if st.ClaimURL != "https://playit.gg/claim/5c9953786b" {
 		t.Fatalf("unexpected ClaimURL: %q", st.ClaimURL)
 	}
+	if len(st.Addresses) != 0 || st.JavaAddress != "" {
+		t.Fatalf("claim URL should not be treated as tunnel address: %+v", st)
+	}
+
+	ParsePlayitOutputLine("Connecting to api.playit.gg and https://playit.gg/account/agents", &st)
+	if len(st.Addresses) != 0 {
+		t.Fatalf("api.playit.gg/account URL should be ignored, got: %v", st.Addresses)
+	}
+
 	ParsePlayitOutputLine("Java tunnel active: sekai-smp.joinmc.link => 127.0.0.1:25565", &st)
 	if st.JavaAddress != "sekai-smp.joinmc.link" {
 		t.Fatalf("unexpected JavaAddress: %q", st.JavaAddress)

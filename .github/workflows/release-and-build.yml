@@ -124,10 +124,16 @@ jobs:
         run: |
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o android/app/src/main/jniLibs/arm64-v8a/libsekailink_core.so ./cmd/sekailink-daemon
-          PLAYIT_URL=$(curl -fsSL https://api.github.com/repos/playit-cloud/playit-agent/releases/latest | jq -r '.assets[] | select(.name == "playit-linux-aarch64") | .browser_download_url' | head -n1 || true)
+          PLAYIT_JSON=$(curl -fsSL https://api.github.com/repos/playit-cloud/playit-agent/releases/latest || true)
+          PLAYIT_URL=$(echo "$PLAYIT_JSON" | jq -r '.assets[] | select(.name == "playit-linux-aarch64") | .browser_download_url' | head -n1 || true)
+          PLAYIT_CLI_URL=$(echo "$PLAYIT_JSON" | jq -r '.assets[] | select(.name == "playit-cli-linux-aarch64") | .browser_download_url' | head -n1 || true)
           if [ -n "$PLAYIT_URL" ] && [ "$PLAYIT_URL" != "null" ]; then
             curl -fSL -o android/app/src/main/jniLibs/arm64-v8a/libplayit_agent.so "$PLAYIT_URL" || true
             chmod +x android/app/src/main/jniLibs/arm64-v8a/libplayit_agent.so || true
+          fi
+          if [ -n "$PLAYIT_CLI_URL" ] && [ "$PLAYIT_CLI_URL" != "null" ]; then
+            curl -fSL -o android/app/src/main/jniLibs/arm64-v8a/libplayit_cli.so "$PLAYIT_CLI_URL" || true
+            chmod +x android/app/src/main/jniLibs/arm64-v8a/libplayit_cli.so || true
           fi
 
       - uses: actions/setup-java@v4

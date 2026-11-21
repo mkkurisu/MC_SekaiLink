@@ -20,17 +20,26 @@ import (
 )
 
 var (
-	claimURLRe    = regexp.MustCompile(`https://playit\.gg/claim/[A-Za-z0-9\-_]+`)
-	tunnelAddrRe  = regexp.MustCompile(`([a-zA-Z0-9.\-]+\.(?:joinmc\.link|playit\.gg|ply\.gg|at\.ply\.gg)(?::\d+)?)`)
+	claimURLRe   = regexp.MustCompile(`https://playit\.gg/claim/[A-Za-z0-9\-_]+`)
+	tunnelAddrRe = regexp.MustCompile(`([a-zA-Z0-9.\-]+\.(?:joinmc\.link|playit\.gg|ply\.gg|at\.ply\.gg)(?::\d+)?)`)
 )
+
+type playitReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
 
 type PlayitManager struct {
 	dataDir string
 	binDir  string
 
-	mu    sync.Mutex
-	cmd   *exec.Cmd
-	state models.TunnelState
+	mu         sync.Mutex
+	cliPath    string
+	daemonPath string
+	socketPath string
+	cmd        *exec.Cmd
+	daemonCmd  *exec.Cmd
+	state      models.TunnelState
 }
 
 func NewPlayitManager(dataDir, binDir string) *PlayitManager {
@@ -43,31 +52,60 @@ func NewPlayitManager(dataDir, binDir string) *PlayitManager {
 }
 
 func (pm *PlayitManager) refreshBinaryPathLocked() {
+	if runtime.GOOS == "windows" {
+		localBin := filepath.Join(pm.binDir, "playit.exe")
+		if _, err := os.Stat(localBin); err == nil {
+			pm.cliPath = localBin
+			pm.state.BinaryPath = localBin
+			pm.state.Installed = true
+			return
+		}
+		if found, err := exec.LookPath("playit.exe"); err == nil {
+			pm.cliPath = found
+			pm.state.BinaryPath = found
+			pm.state.Installed = true
+			return
+		}
+		pm.cliPath = localBin
+		pm.state.BinaryPath = localBin
+		pm.state.Installed = false
+		return
+	}
+
+	// Linux & Android require both playitd (daemon) and playit-cli (IPC frontend for claim URL + stdout tunnels).
 	if nativeDir := strings.TrimSpace(os.Getenv("SEKAILINK_NATIVE_LIB_DIR")); nativeDir != "" {
-		cand := filepath.Join(nativeDir, "libplayit_agent.so")
-		if _, err := os.Stat(cand); err == nil {
-			pm.state.BinaryPath = cand
+		daemonCand := filepath.Join(nativeDir, "libplayit_agent.so")
+		cliCand := filepath.Join(nativeDir, "libplayit_cli.so")
+		_, dErr := os.Stat(daemonCand)
+		_, cErr := os.Stat(cliCand)
+		if dErr == nil && cErr == nil {
+			pm.daemonPath = daemonCand
+			pm.cliPath = cliCand
+			pm.state.BinaryPath = daemonCand
 			pm.state.Installed = true
 			return
 		}
 	}
-	exeName := "playit"
-	if runtime.GOOS == "windows" {
-		exeName = "playit.exe"
+
+	localDaemon := filepath.Join(pm.binDir, "playitd")
+	localCLI := filepath.Join(pm.binDir, "playit-cli")
+	if _, err := os.Stat(localDaemon); err != nil {
+		if found, err2 := exec.LookPath("playitd"); err2 == nil {
+			localDaemon = found
+		}
 	}
-	localBin := filepath.Join(pm.binDir, exeName)
-	if _, err := os.Stat(localBin); err == nil {
-		pm.state.BinaryPath = localBin
-		pm.state.Installed = true
-		return
+	if _, err := os.Stat(localCLI); err != nil {
+		if found, err2 := exec.LookPath("playit-cli"); err2 == nil {
+			localCLI = found
+		}
 	}
-	if found, err := exec.LookPath(exeName); err == nil {
-		pm.state.BinaryPath = found
-		pm.state.Installed = true
-		return
-	}
-	pm.state.BinaryPath = localBin
-	pm.state.Installed = false
+
+	_, dErr := os.Stat(localDaemon)
+	_, cErr := os.Stat(localCLI)
+	pm.daemonPath = localDaemon
+	pm.cliPath = localCLI
+	pm.state.BinaryPath = localDaemon
+	pm.state.Installed = (dErr == nil && cErr == nil)
 }
 
 func (pm *PlayitManager) Status() models.TunnelState {
@@ -90,15 +128,16 @@ func (pm *PlayitManager) Install(ctx context.Context) (models.TunnelState, error
 		pm.mu.Unlock()
 		return st, nil
 	}
-	destPath := pm.state.BinaryPath
+	cliDest := pm.cliPath
+	daemonDest := pm.daemonPath
 	pm.mu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+	if err := os.MkdirAll(pm.binDir, 0o755); err != nil {
 		return pm.Status(), err
 	}
 
-	assetMatch := matchPlayitAssetName()
-	if assetMatch == "" {
+	cliAsset, daemonAsset := matchPlayitAssetNames()
+	if cliAsset == "" {
 		return pm.Status(), fmt.Errorf("bu isletim sistemi/mimari icin playit otomatik indirme desteklenmiyor (%s/%s)", runtime.GOOS, runtime.GOARCH)
 	}
 
@@ -117,95 +156,91 @@ func (pm *PlayitManager) Install(ctx context.Context) (models.TunnelState, error
 	}
 
 	var rel struct {
-		Assets []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-		} `json:"assets"`
+		Assets []playitReleaseAsset `json:"assets"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		return pm.Status(), err
 	}
 
-	var dlURL string
-	for _, a := range rel.Assets {
-		if strings.EqualFold(a.Name, assetMatch) {
-			dlURL = a.BrowserDownloadURL
-			break
+	if daemonAsset != "" {
+		if err := downloadPlayitAsset(ctx, rel.Assets, daemonAsset, daemonDest); err != nil {
+			return pm.Status(), err
 		}
 	}
-	if dlURL == "" {
-		for _, a := range rel.Assets {
-			if strings.Contains(strings.ToLower(a.Name), strings.ToLower(assetMatch)) {
-				dlURL = a.BrowserDownloadURL
-				break
-			}
-		}
-	}
-	if dlURL == "" {
-		return pm.Status(), fmt.Errorf("playit release icinde %s dosyasi bulunamadi", assetMatch)
-	}
-
-	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
-	if err != nil {
+	if err := downloadPlayitAsset(ctx, rel.Assets, cliAsset, cliDest); err != nil {
 		return pm.Status(), err
-	}
-	dlReq.Header.Set("User-Agent", "MC-SekaiLink/0.1.0")
-	dlResp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(dlReq)
-	if err != nil {
-		return pm.Status(), err
-	}
-	defer dlResp.Body.Close()
-	if dlResp.StatusCode != http.StatusOK {
-		return pm.Status(), fmt.Errorf("playit indirme HTTP %d", dlResp.StatusCode)
-	}
-
-	tmp := destPath + ".part"
-	out, err := os.Create(tmp)
-	if err != nil {
-		return pm.Status(), err
-	}
-	if _, err := io.Copy(out, dlResp.Body); err != nil {
-		out.Close()
-		_ = os.Remove(tmp)
-		return pm.Status(), err
-	}
-	out.Close()
-	_ = os.Chmod(tmp, 0o755)
-	if err := os.Rename(tmp, destPath); err != nil {
-		_ = os.Remove(destPath)
-		if err2 := os.Rename(tmp, destPath); err2 != nil {
-			return pm.Status(), err2
-		}
 	}
 
 	pm.mu.Lock()
-	pm.state.Installed = true
-	pm.state.BinaryPath = destPath
+	pm.refreshBinaryPathLocked()
 	pm.state.LastError = ""
 	pm.mu.Unlock()
 	return pm.Status(), nil
 }
 
-func matchPlayitAssetName() string {
+func downloadPlayitAsset(ctx context.Context, assets []playitReleaseAsset, assetName, destPath string) error {
+	var dlURL string
+	for _, a := range assets {
+		if strings.EqualFold(a.Name, assetName) {
+			dlURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	if dlURL == "" {
+		return fmt.Errorf("playit release icinde %s dosyasi bulunamadi", assetName)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "MC-SekaiLink/0.1.0")
+	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("playit indirme HTTP %d", resp.StatusCode)
+	}
+	tmp := destPath + ".part"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	out.Close()
+	_ = os.Chmod(tmp, 0o755)
+	if err := os.Rename(tmp, destPath); err != nil {
+		_ = os.Remove(destPath)
+		return os.Rename(tmp, destPath)
+	}
+	return nil
+}
+
+func matchPlayitAssetNames() (cliAsset string, daemonAsset string) {
 	switch runtime.GOOS {
 	case "windows":
 		if runtime.GOARCH == "amd64" {
-			return "playit-windows-x86_64.exe"
+			return "playit-windows-x86_64.exe", ""
 		}
 	case "linux":
 		switch runtime.GOARCH {
 		case "amd64":
-			return "playit-linux-amd64"
+			return "playit-cli-linux-amd64", "playit-linux-amd64"
 		case "arm64":
-			return "playit-linux-aarch64"
+			return "playit-cli-linux-aarch64", "playit-linux-aarch64"
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func (pm *PlayitManager) Start() error {
 	pm.mu.Lock()
-	if pm.cmd != nil {
+	if pm.cmd != nil || pm.daemonCmd != nil {
 		pm.mu.Unlock()
 		return nil
 	}
@@ -214,28 +249,104 @@ func (pm *PlayitManager) Start() error {
 		pm.mu.Unlock()
 		return fmt.Errorf("playit ajani kurulu degil, once yukleyin")
 	}
-	secretPath := filepath.Join(pm.dataDir, "playit.toml")
-	cmd := exec.Command(pm.state.BinaryPath, "--secret_path", secretPath)
-	configurePlayitWindow(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		pm.mu.Unlock()
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		pm.mu.Unlock()
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		pm.mu.Unlock()
-		return err
-	}
-	pm.cmd = cmd
-	pm.state.Running = true
+
+	pm.state.Logs = nil
+	pm.state.ClaimURL = ""
 	pm.state.LastError = ""
+
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command(pm.cliPath, "--stdout")
+		cmd.Dir = pm.dataDir
+		configurePlayitWindow(cmd)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			pm.mu.Unlock()
+			return err
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			pm.mu.Unlock()
+			return err
+		}
+		if err := cmd.Start(); err != nil {
+			pm.mu.Unlock()
+			return err
+		}
+		pm.cmd = cmd
+		pm.state.Running = true
+		pm.mu.Unlock()
+
+		pm.watchProcess(cmd, stdout, stderr, true)
+		return nil
+	}
+
+	// Linux / Android: launch playitd with --secret-path and --socket-path, then attach playit-cli --stdout.
+	sockPath := filepath.Join(os.TempDir(), "sekailink-playit.sock")
+	_ = os.Remove(sockPath)
+	secretPath := filepath.Join(pm.dataDir, "playit.toml")
+
+	dCmd := exec.Command(pm.daemonPath, "--secret-path", secretPath, "--socket-path", sockPath)
+	dCmd.Dir = pm.dataDir
+	configurePlayitWindow(dCmd)
+	dOut, err := dCmd.StdoutPipe()
+	if err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	dErr, err := dCmd.StderrPipe()
+	if err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	if err := dCmd.Start(); err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	pm.daemonCmd = dCmd
+	pm.socketPath = sockPath
+	pm.state.Running = true
 	pm.mu.Unlock()
 
+	pm.watchProcess(dCmd, dOut, dErr, false)
+
+	// Wait briefly for Unix IPC socket creation before starting playit-cli
+	for i := 0; i < 40; i++ {
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	pm.mu.Lock()
+	if pm.daemonCmd == nil {
+		pm.mu.Unlock()
+		return fmt.Errorf("playitd baslatilamadi")
+	}
+	cCmd := exec.Command(pm.cliPath, "--socket-path", sockPath, "--stdout")
+	cCmd.Dir = pm.dataDir
+	configurePlayitWindow(cCmd)
+	cOut, err := cCmd.StdoutPipe()
+	if err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	cErr, err := cCmd.StderrPipe()
+	if err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	if err := cCmd.Start(); err != nil {
+		pm.mu.Unlock()
+		return err
+	}
+	pm.cmd = cCmd
+	pm.mu.Unlock()
+
+	pm.watchProcess(cCmd, cOut, cErr, true)
+	return nil
+}
+
+func (pm *PlayitManager) watchProcess(proc *exec.Cmd, stdout, stderr io.ReadCloser, isPrimary bool) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
@@ -246,30 +357,50 @@ func (pm *PlayitManager) Start() error {
 		defer wg.Done()
 		pm.readLogs(stderr)
 	}()
-
 	go func() {
 		wg.Wait()
-		err := cmd.Wait()
+		err := proc.Wait()
 		pm.mu.Lock()
-		pm.cmd = nil
-		pm.state.Running = false
-		if err != nil {
+		if isPrimary {
+			pm.cmd = nil
+			if pm.daemonCmd == nil {
+				pm.state.Running = false
+			}
+		} else {
+			pm.daemonCmd = nil
+			if pm.cmd == nil {
+				pm.state.Running = false
+			}
+			if pm.socketPath != "" {
+				_ = os.Remove(pm.socketPath)
+			}
+		}
+		if err != nil && pm.state.LastError == "" {
 			pm.state.LastError = err.Error()
 		}
 		pm.mu.Unlock()
 	}()
-
-	return nil
 }
 
 func (pm *PlayitManager) Stop() error {
 	pm.mu.Lock()
-	cmd := pm.cmd
+	cCmd := pm.cmd
+	dCmd := pm.daemonCmd
+	sock := pm.socketPath
+	pm.cmd = nil
+	pm.daemonCmd = nil
+	pm.state.Running = false
 	pm.mu.Unlock()
-	if cmd == nil || cmd.Process == nil {
-		return nil
+
+	if cCmd != nil && cCmd.Process != nil {
+		_ = cCmd.Process.Kill()
 	}
-	_ = cmd.Process.Kill()
+	if dCmd != nil && dCmd.Process != nil {
+		_ = dCmd.Process.Kill()
+	}
+	if sock != "" {
+		_ = os.Remove(sock)
+	}
 	return nil
 }
 
@@ -298,7 +429,13 @@ func ParsePlayitOutputLine(line string, state *models.TunnelState) {
 	}
 	matches := tunnelAddrRe.FindAllString(line, -1)
 	for _, addr := range matches {
-		if strings.Contains(addr, "playit.gg/claim") {
+		lowerAddr := strings.ToLower(addr)
+		if lowerAddr == "playit.gg" ||
+			lowerAddr == "api.playit.gg" ||
+			lowerAddr == "www.playit.gg" ||
+			lowerAddr == "docs.playit.gg" ||
+			strings.Contains(line, "playit.gg/claim") ||
+			strings.Contains(line, "playit.gg/account") {
 			continue
 		}
 		found := false
@@ -314,7 +451,7 @@ func ParsePlayitOutputLine(line string, state *models.TunnelState) {
 		lowerLine := strings.ToLower(line)
 		if strings.Contains(lowerLine, "bedrock") || strings.Contains(lowerLine, "udp") || strings.Contains(lowerLine, "19132") {
 			state.BedrockAddress = addr
-		} else if strings.Contains(lowerLine, "java") || strings.Contains(addr, "joinmc.link") || state.JavaAddress == "" {
+		} else if strings.Contains(lowerLine, "java") || strings.Contains(lowerAddr, "joinmc.link") || state.JavaAddress == "" {
 			state.JavaAddress = addr
 		}
 	}
