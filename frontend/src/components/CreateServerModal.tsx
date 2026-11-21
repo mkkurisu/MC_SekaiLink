@@ -59,6 +59,7 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
 
   useEffect(() => {
     if (!open || step !== 2 || !selectedEngine) return;
+    setError('');
     setLoadingVersions(true);
     setVersions([]);
     apiFetch<string[]>(`/api/catalog/versions/${selectedEngine}`)

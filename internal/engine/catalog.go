@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,13 +96,12 @@ func FetchVersions(ctx context.Context, eng models.EngineType) ([]string, error)
 	switch eng {
 	case models.EnginePaper:
 		var res struct {
-			Versions []string `json:"versions"`
+			Versions map[string][]string `json:"versions"`
 		}
-		if err := getJSON(ctx, "https://api.papermc.io/v2/projects/paper", &res); err != nil {
+		if err := getJSON(ctx, "https://fill.papermc.io/v3/projects/paper", &res); err != nil {
 			return nil, err
 		}
-		reverseStrings(res.Versions)
-		return limitStrings(res.Versions, 40), nil
+		return limitStrings(extractSortedPaperVersions(res.Versions), 40), nil
 
 	case models.EnginePurpur:
 		var res struct {
@@ -301,27 +302,31 @@ func InstallEngineArtifacts(ctx context.Context, inst models.ServerInstance, jav
 
 func installPaper(ctx context.Context, mcVersion, serverDir string, progress func(string)) error {
 	progress(fmt.Sprintf("Paper %s surum bilgisi aliniyor...", mcVersion))
-	var builds struct {
-		Builds []struct {
-			Build     int `json:"build"`
-			Downloads struct {
-				Application struct {
-					Name string `json:"name"`
-				} `json:"application"`
-			} `json:"downloads"`
-		} `json:"builds"`
+	var latest struct {
+		ID        int `json:"id"`
+		Downloads map[string]struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"downloads"`
 	}
-	u := fmt.Sprintf("https://api.papermc.io/v2/projects/paper/versions/%s/builds", mcVersion)
-	if err := getJSON(ctx, u, &builds); err != nil {
+	u := fmt.Sprintf("https://fill.papermc.io/v3/projects/paper/versions/%s/builds/latest", mcVersion)
+	if err := getJSON(ctx, u, &latest); err != nil {
 		return err
 	}
-	if len(builds.Builds) == 0 {
-		return fmt.Errorf("Paper %s icin build bulunamadi", mcVersion)
+	dl := latest.Downloads["server:default"]
+	if dl.URL == "" {
+		for _, entry := range latest.Downloads {
+			if entry.URL != "" {
+				dl = entry
+				break
+			}
+		}
 	}
-	latest := builds.Builds[len(builds.Builds)-1]
-	dl := fmt.Sprintf("https://api.papermc.io/v2/projects/paper/versions/%s/builds/%d/downloads/%s", mcVersion, latest.Build, latest.Downloads.Application.Name)
-	progress(fmt.Sprintf("Paper #%d indiriliyor...", latest.Build))
-	return downloadToFile(ctx, dl, filepath.Join(serverDir, "server.jar"))
+	if dl.URL == "" {
+		return fmt.Errorf("Paper %s icin indirilebilir build bulunamadi", mcVersion)
+	}
+	progress(fmt.Sprintf("Paper #%d indiriliyor...", latest.ID))
+	return downloadToFile(ctx, dl.URL, filepath.Join(serverDir, "server.jar"))
 }
 
 func installFabric(ctx context.Context, mcVersion, serverDir string, progress func(string)) error {
@@ -658,4 +663,70 @@ func limitStrings(s []string, max int) []string {
 		return s
 	}
 	return s[:max]
+}
+
+func extractSortedPaperVersions(groups map[string][]string) []string {
+	seen := make(map[string]bool)
+	var stable []string
+	var all []string
+	for _, list := range groups {
+		for _, v := range list {
+			v = strings.TrimSpace(v)
+			if v == "" || seen[v] {
+				continue
+			}
+			seen[v] = true
+			all = append(all, v)
+			lower := strings.ToLower(v)
+			if !strings.Contains(lower, "-rc") &&
+				!strings.Contains(lower, "-pre") &&
+				!strings.Contains(lower, "-snapshot") &&
+				!strings.Contains(lower, "-alpha") &&
+				!strings.Contains(lower, "-beta") {
+				stable = append(stable, v)
+			}
+		}
+	}
+	target := stable
+	if len(target) == 0 {
+		target = all
+	}
+	sort.Slice(target, func(i, j int) bool {
+		return compareMCVersion(target[i], target[j]) > 0
+	})
+	return target
+}
+
+func compareMCVersion(a, b string) int {
+	aBase, aSuffix, aHasSuffix := strings.Cut(a, "-")
+	bBase, bSuffix, bHasSuffix := strings.Cut(b, "-")
+	aParts := strings.Split(aBase, ".")
+	bParts := strings.Split(bBase, ".")
+
+	maxLen := len(aParts)
+	if len(bParts) > maxLen {
+		maxLen = len(bParts)
+	}
+	for i := 0; i < maxLen; i++ {
+		var ai, bi int
+		if i < len(aParts) {
+			ai, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bi, _ = strconv.Atoi(bParts[i])
+		}
+		if ai != bi {
+			if ai > bi {
+				return 1
+			}
+			return -1
+		}
+	}
+	if aHasSuffix != bHasSuffix {
+		if !aHasSuffix {
+			return 1
+		}
+		return -1
+	}
+	return strings.Compare(aSuffix, bSuffix)
 }
