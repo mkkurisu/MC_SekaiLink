@@ -31,6 +31,7 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
   const [javaPort, setJavaPort] = useState(25565);
   const [bedrockPort, setBedrockPort] = useState(19132);
   const [viaVersion, setViaVersion] = useState(true);
+  const [offlineMode, setOfflineMode] = useState(true);
   const [eulaAccepted, setEulaAccepted] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -99,6 +100,7 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
           bedrockPort,
           memoryMB,
           jvmPreset,
+          offlineMode,
           eulaAccepted,
           autoRestart: false,
         }),
@@ -341,6 +343,28 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                       <span>{t.viaVersion}</span>
                     </label>
                   )}
+
+                  <div className="space-y-2 rounded-xl border border-amber-500/25 bg-amber-500/5 p-3">
+                    <label className="flex items-start gap-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={offlineMode}
+                        onChange={(e) => setOfflineMode(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-amber-400"
+                      />
+                      <div>
+                        <div className="font-medium text-white">Cevrimdisi / Premium Olmayan Giris (Offline Mode)</div>
+                        <p className="mt-0.5 text-xs text-slate-400">
+                          Orijinal hesabi olmayan (crackli/offline) Java ve Bedrock oyuncularinin girmesine izin verir (online-mode=false, enforce-secure-profile=false, Geyser offline).
+                        </p>
+                      </div>
+                    </label>
+                    {offlineMode && (
+                      <p className="pl-7 text-[11px] text-amber-300/90">
+                        Guvenlik ipucu: Herkese acik tunel kullanirken isim taklidini onlemek icin Whitelist veya Modrinth&apos;ten AuthMe / LoginSecurity kurmaniz onerilir.
+                      </p>
+                    )}
+                  </div>
 
                   {selectedEngine !== 'bds' && selectedEngine !== 'powernukkitx' && (
                     <label className="flex items-center gap-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-sm text-slate-200">

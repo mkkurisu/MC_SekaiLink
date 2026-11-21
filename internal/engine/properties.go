@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/MC_SekaiLink/mc-sekailink/internal/models"
 )
 
 // ReadProperties loads server.properties preserving key/value pairs.
@@ -81,6 +84,7 @@ func DefaultJavaProperties() map[string]string {
 		"difficulty":             "normal",
 		"max-players":            "20",
 		"online-mode":            "true",
+		"enforce-secure-profile": "true",
 		"pvp":                    "true",
 		"white-list":             "false",
 		"allow-flight":           "false",
@@ -112,4 +116,94 @@ func DefaultBedrockProperties() map[string]string {
 		"server-portv6":          "19133",
 		"default-player-permission-level": "member",
 	}
+}
+
+var geyserAuthTypeRe = regexp.MustCompile(`(?m)^(\s*auth-type:\s*).*$`)
+
+// SyncOfflineMode updates server.properties and any existing GeyserMC config.yml
+// so non-premium (offline) and premium authentication modes stay consistent across engines.
+func SyncOfflineMode(inst models.ServerInstance) error {
+	if inst.Path == "" {
+		return nil
+	}
+
+	switch inst.Engine {
+	case models.EngineBDS:
+		props := DefaultBedrockProperties()
+		if _, err := os.Stat(filepath.Join(inst.Path, "server.properties")); err == nil {
+			if loaded, err := ReadProperties(inst.Path); err == nil {
+				props = loaded
+			}
+		}
+		if inst.OfflineMode {
+			props["online-mode"] = "false"
+		} else {
+			props["online-mode"] = "true"
+		}
+		if err := WriteProperties(inst.Path, props); err != nil {
+			return err
+		}
+
+	case models.EnginePowerNukkitX:
+		props := DefaultBedrockProperties()
+		if _, err := os.Stat(filepath.Join(inst.Path, "server.properties")); err == nil {
+			if loaded, err := ReadProperties(inst.Path); err == nil {
+				props = loaded
+			}
+		}
+		if inst.OfflineMode {
+			props["xbox-auth"] = "off"
+		} else {
+			props["xbox-auth"] = "on"
+		}
+		if err := WriteProperties(inst.Path, props); err != nil {
+			return err
+		}
+
+	default:
+		props, err := ReadProperties(inst.Path)
+		if err != nil {
+			return err
+		}
+		if inst.OfflineMode {
+			props["online-mode"] = "false"
+			props["enforce-secure-profile"] = "false"
+		} else {
+			props["online-mode"] = "true"
+			props["enforce-secure-profile"] = "true"
+		}
+		if err := WriteProperties(inst.Path, props); err != nil {
+			return err
+		}
+	}
+
+	targetAuth := "online"
+	if inst.OfflineMode {
+		targetAuth = "offline"
+	} else if inst.CrossPlay.Floodgate {
+		targetAuth = "floodgate"
+	}
+
+	geyserConfigs := []string{
+		filepath.Join(inst.Path, "plugins", "Geyser-Spigot", "config.yml"),
+		filepath.Join(inst.Path, "config", "Geyser-Fabric", "config.yml"),
+		filepath.Join(inst.Path, "config", "Geyser-NeoForge", "config.yml"),
+	}
+	for _, cfgPath := range geyserConfigs {
+		raw, err := os.ReadFile(cfgPath)
+		if err != nil {
+			continue
+		}
+		updated := geyserAuthTypeRe.ReplaceAllString(string(raw), "${1}"+targetAuth)
+		if updated != string(raw) {
+			tmp := cfgPath + ".tmp"
+			if err := os.WriteFile(tmp, []byte(updated), 0o644); err == nil {
+				if err := os.Rename(tmp, cfgPath); err != nil {
+					_ = os.Remove(cfgPath)
+					_ = os.Rename(tmp, cfgPath)
+				}
+			}
+		}
+	}
+	return nil
 }

@@ -234,10 +234,11 @@ func (m *Manager) Start(id string) error {
 		return fmt.Errorf("Minecraft EULA onaylanmadan sunucu baslatilamaz")
 	}
 
-	// Ensure eula.txt matches
+	// Ensure eula.txt and offline/online authentication settings stay synced
 	if inst.Engine != models.EngineBDS && inst.Engine != models.EnginePowerNukkitX && inst.EULAAccepted {
 		_ = os.WriteFile(filepath.Join(inst.Path, "eula.txt"), []byte("# MC SekaiLink\neula=true\n"), 0o644)
 	}
+	_ = SyncOfflineMode(inst)
 
 	cmd, err := m.buildStartCommand(inst)
 	if err != nil {

@@ -36,6 +36,7 @@ export interface ServerInstance {
   jvmPreset: JVMPreset;
   javaPath?: string;
   autoRestart: boolean;
+  offlineMode: boolean;
   eulaAccepted: boolean;
   createdAt: string;
   path: string;

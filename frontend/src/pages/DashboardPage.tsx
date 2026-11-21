@@ -178,6 +178,15 @@ export const DashboardPage: React.FC<Props> = ({
                   Cross-Play (Java + Bedrock)
                 </span>
               )}
+              <span
+                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                  server.offlineMode
+                    ? 'border-amber-500/35 bg-amber-500/15 text-amber-300'
+                    : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                }`}
+              >
+                {server.offlineMode ? 'Offline Mod (Crackli Acik)' : 'Premium Mod'}
+              </span>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-400">
               <span>Motor: <strong className="text-slate-200 uppercase">{server.engine}</strong></span>

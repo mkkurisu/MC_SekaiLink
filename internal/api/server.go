@@ -419,6 +419,7 @@ func (s *Server) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 		JavaPort     *int                    `json:"javaPort"`
 		BedrockPort  *int                    `json:"bedrockPort"`
 		AutoRestart  *bool                   `json:"autoRestart"`
+		OfflineMode  *bool                   `json:"offlineMode"`
 		EULAAccepted *bool                   `json:"eulaAccepted"`
 		JavaPath     *string                 `json:"javaPath"`
 		CrossPlay    *models.CrossPlayConfig `json:"crossPlay"`
@@ -445,6 +446,9 @@ func (s *Server) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	if body.AutoRestart != nil {
 		inst.AutoRestart = *body.AutoRestart
 	}
+	if body.OfflineMode != nil {
+		inst.OfflineMode = *body.OfflineMode
+	}
 	if body.EULAAccepted != nil {
 		inst.EULAAccepted = *body.EULAAccepted
 	}
@@ -457,6 +461,9 @@ func (s *Server) handleUpdateServer(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SaveInstance(inst); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if body.OfflineMode != nil {
+		_ = engine.SyncOfflineMode(inst)
 	}
 	writeJSON(w, http.StatusOK, inst)
 }
@@ -592,9 +599,23 @@ func (s *Server) handleUpdateProperties(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if lvl := strings.TrimSpace(props["level-name"]); lvl != "" {
+	changed := false
+	if lvl := strings.TrimSpace(props["level-name"]); lvl != "" && lvl != inst.ActiveWorld {
 		inst.ActiveWorld = lvl
+		changed = true
+	}
+	if inst.Engine == models.EnginePowerNukkitX {
+		if xa, ok := props["xbox-auth"]; ok {
+			inst.OfflineMode = strings.EqualFold(strings.TrimSpace(xa), "off") || strings.EqualFold(strings.TrimSpace(xa), "false")
+			changed = true
+		}
+	} else if om, ok := props["online-mode"]; ok {
+		inst.OfflineMode = strings.EqualFold(strings.TrimSpace(om), "false")
+		changed = true
+	}
+	if changed {
 		_ = s.store.SaveInstance(inst)
+		_ = engine.SyncOfflineMode(inst)
 	}
 	writeJSON(w, http.StatusOK, props)
 }

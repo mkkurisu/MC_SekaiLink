@@ -52,6 +52,7 @@ type ServerInstance struct {
 	JVMPreset    JVMPreset       `json:"jvmPreset"`
 	JavaPath     string          `json:"javaPath,omitempty"`
 	AutoRestart  bool            `json:"autoRestart"`
+	OfflineMode  bool            `json:"offlineMode"`
 	EULAAccepted bool            `json:"eulaAccepted"`
 	CreatedAt    time.Time       `json:"createdAt"`
 	Path         string          `json:"path"`

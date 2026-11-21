@@ -32,6 +32,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
   const [javaPort, setJavaPort] = useState(25565);
   const [bedrockPort, setBedrockPort] = useState(19132);
   const [autoRestart, setAutoRestart] = useState(false);
+  const [offlineMode, setOfflineMode] = useState(false);
   const [props, setProps] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [installingJava, setInstallingJava] = useState(false);
@@ -45,6 +46,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
     setJavaPort(server.javaPort);
     setBedrockPort(server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort);
     setAutoRestart(server.autoRestart);
+    setOfflineMode(Boolean(server.offlineMode));
     apiFetch<Record<string, string>>(`/api/servers/${server.id}/properties`)
       .then(setProps)
       .catch(() => {});
@@ -55,6 +57,22 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
     setSaving(true);
     setMsg('');
     try {
+      const nextProps: Record<string, string> = {
+        ...props,
+        'server-port': String(server.engine === 'bds' ? bedrockPort : javaPort),
+      };
+      if (server.engine === 'powernukkitx') {
+        nextProps['xbox-auth'] = offlineMode ? 'off' : 'on';
+      } else {
+        nextProps['online-mode'] = offlineMode ? 'false' : 'true';
+        if (server.engine !== 'bds') {
+          nextProps['enforce-secure-profile'] = offlineMode ? 'false' : 'true';
+        }
+      }
+      await apiFetch(`/api/servers/${server.id}/properties`, {
+        method: 'PUT',
+        body: JSON.stringify(nextProps),
+      });
       await apiFetch(`/api/servers/${server.id}`, {
         method: 'PUT',
         body: JSON.stringify({
@@ -64,14 +82,12 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
           javaPort,
           bedrockPort,
           autoRestart,
+          offlineMode,
           crossPlay: { ...server.crossPlay, bedrockPort },
         }),
       });
-      await apiFetch(`/api/servers/${server.id}/properties`, {
-        method: 'PUT',
-        body: JSON.stringify({ ...props, 'server-port': String(server.engine === 'bds' ? bedrockPort : javaPort) }),
-      });
-      setMsg('Ayarlar kaydedildi. Port/RAM degisiklikleri sonraki baslatmada uygulanir.');
+      setProps(nextProps);
+      setMsg('Ayarlar kaydedildi. Port/RAM ve Offline Mode degisiklikleri sonraki baslatmada uygulanir.');
       onRefresh();
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : 'Kaydetme hatasi');
@@ -214,6 +230,38 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
             Cokme durumunda otomatik yeniden baslat
           </label>
         </div>
+
+        <div className="mt-4 space-y-2 rounded-2xl border border-amber-500/25 bg-amber-500/5 p-4">
+          <label className="flex items-start gap-3 text-sm text-slate-200">
+            <input
+              type="checkbox"
+              checked={offlineMode}
+              onChange={(e) => {
+                const next = e.target.checked;
+                setOfflineMode(next);
+                setProps((prev) => ({
+                  ...prev,
+                  'online-mode': next ? 'false' : 'true',
+                  ...(server.engine !== 'bds' && server.engine !== 'powernukkitx'
+                    ? { 'enforce-secure-profile': next ? 'false' : 'true' }
+                    : {}),
+                }));
+              }}
+              className="mt-0.5 h-4 w-4 accent-amber-400"
+            />
+            <div>
+              <div className="font-semibold text-white">Cevrimdisi / Premium Olmayan Giris (Offline Mode)</div>
+              <p className="mt-0.5 text-xs text-slate-400">
+                Crackli veya Mojang/Microsoft hesabi dogrulanmamis Java &amp; Bedrock oyuncularinin girmesine izin verir (online-mode, enforce-secure-profile ve Geyser ayarlari otomatik senkronlanir).
+              </p>
+            </div>
+          </label>
+          {offlineMode && (
+            <p className="pl-7 text-[11px] text-amber-300/90">
+              Guvenlik ipucu: Herkese acik tunel kullanirken isim taklidini onlemek icin Whitelist veya Modrinth&apos;ten AuthMe / LoginSecurity kurmaniz onerilir.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* server.properties Editor */}
@@ -230,7 +278,13 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
                 <label className="mb-1.5 block text-xs font-medium text-slate-300">{f.label}</label>
                 {f.type === 'bool' ? (
                   <button
-                    onClick={() => setProps({ ...props, [f.key]: val === 'true' ? 'false' : 'true' })}
+                    onClick={() => {
+                      const nextVal = val === 'true' ? 'false' : 'true';
+                      setProps({ ...props, [f.key]: nextVal });
+                      if (f.key === 'online-mode') {
+                        setOfflineMode(nextVal === 'false');
+                      }
+                    }}
                     className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${val === 'true' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}
                   >
                     {val === 'true' ? 'Acik (true)' : 'Kapali (false)'}

@@ -296,6 +296,10 @@ func InstallEngineArtifacts(ctx context.Context, inst models.ServerInstance, jav
 		}
 	}
 
+	if err := SyncOfflineMode(inst); err != nil {
+		return err
+	}
+
 	progress("Kurulum tamamlandi.")
 	return nil
 }
@@ -561,7 +565,9 @@ func installCrossPlayPlugins(ctx context.Context, inst models.ServerInstance, pr
 				bedrockPort = 19132
 			}
 			authType := "online"
-			if inst.CrossPlay.Floodgate {
+			if inst.OfflineMode {
+				authType = "offline"
+			} else if inst.CrossPlay.Floodgate {
 				authType = "floodgate"
 			}
 			yml := fmt.Sprintf(`bedrock:
