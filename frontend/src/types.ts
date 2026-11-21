@@ -190,3 +190,22 @@ export interface TunnelState {
   logs: string[];
   lastError?: string;
 }
+
+export interface BoreState {
+  running: boolean;
+  serverHost: string;
+  localPort: number;
+  remotePort: number;
+  address: string;
+  lastError?: string;
+}
+
+export interface RelayState {
+  running: boolean;
+  relayAddr: string;
+  localJavaPort: number;
+  localBedrockPort: number;
+  javaAddress: string;
+  bedrockAddress: string;
+  lastError?: string;
+}

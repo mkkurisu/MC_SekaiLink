@@ -38,10 +38,10 @@ func main() {
 
 	err = wails.Run(&options.App{
 		Title:     "MC SekaiLink",
-		Width:     1320,
-		Height:    840,
-		MinWidth:  960,
-		MinHeight: 640,
+		Width:     1024,
+		Height:    620,
+		MinWidth:  780,
+		MinHeight: 500,
 		AssetServer: &assetserver.Options{
 			Assets: web.SubFS(),
 		},

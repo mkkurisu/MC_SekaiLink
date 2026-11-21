@@ -29,6 +29,8 @@ type Server struct {
 	store    *storage.Store
 	manager  *engine.Manager
 	playit   *network.PlayitManager
+	bore     *network.BoreManager
+	relay    *network.RelayManager
 	staticFS fs.FS
 
 	upgrader websocket.Upgrader
@@ -44,6 +46,8 @@ func NewServer(store *storage.Store, manager *engine.Manager, playit *network.Pl
 		store:    store,
 		manager:  manager,
 		playit:   playit,
+		bore:     network.NewBoreManager(),
+		relay:    network.NewRelayManager(),
 		staticFS: staticFS,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
@@ -111,6 +115,12 @@ func (s *Server) RestartListening() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.bore != nil {
+		_ = s.bore.Stop()
+	}
+	if s.relay != nil {
+		_ = s.relay.Stop()
+	}
 	s.srvMu.Lock()
 	srv := s.httpServer
 	s.httpServer = nil
@@ -183,7 +193,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/servers/{id}/backups/{filename}/restore", s.handleRestoreBackup)
 	mux.HandleFunc("DELETE /api/servers/{id}/backups/{filename}", s.handleDeleteBackup)
 
-	// Network, UPnP & playit.gg
+	// Network, UPnP, bore.pub, SekaiLink Relay & playit.gg
 	mux.HandleFunc("GET /api/network/diagnostics", s.handleNetworkDiagnostics)
 	mux.HandleFunc("POST /api/network/upnp/map", s.handleUPnPMap)
 	mux.HandleFunc("POST /api/network/upnp/unmap", s.handleUPnPUnmap)
@@ -191,6 +201,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/network/playit/install", s.handlePlayitInstall)
 	mux.HandleFunc("POST /api/network/playit/start", s.handlePlayitStart)
 	mux.HandleFunc("POST /api/network/playit/stop", s.handlePlayitStop)
+	mux.HandleFunc("GET /api/network/bore/status", s.handleBoreStatus)
+	mux.HandleFunc("POST /api/network/bore/start", s.handleBoreStart)
+	mux.HandleFunc("POST /api/network/bore/stop", s.handleBoreStop)
+	mux.HandleFunc("GET /api/network/relay/status", s.handleRelayStatus)
+	mux.HandleFunc("POST /api/network/relay/start", s.handleRelayStart)
+	mux.HandleFunc("POST /api/network/relay/stop", s.handleRelayStop)
 
 	// WebSocket Console
 	mux.HandleFunc("GET /api/ws/console/{id}", s.handleWSConsole)
@@ -1120,6 +1136,69 @@ func (s *Server) handlePlayitStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.playit.Status())
+}
+
+func (s *Server) handleBoreStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.bore.Status())
+}
+
+func (s *Server) handleBoreStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ServerHost string `json:"serverHost"`
+		LocalPort  int    `json:"localPort"`
+		Secret     string `json:"secret"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.LocalPort <= 0 {
+		body.LocalPort = 25565
+	}
+	st, err := s.bore.Start(body.ServerHost, body.LocalPort, body.Secret)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleBoreStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.bore.Stop()
+	writeJSON(w, http.StatusOK, s.bore.Status())
+}
+
+func (s *Server) handleRelayStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.relay.Status())
+}
+
+func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RelayAddr        string `json:"relayAddr"`
+		Secret           string `json:"secret"`
+		LocalJavaPort    int    `json:"localJavaPort"`
+		LocalBedrockPort int    `json:"localBedrockPort"`
+		WantJava         bool   `json:"wantJava"`
+		WantBedrock      bool   `json:"wantBedrock"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.LocalJavaPort <= 0 {
+		body.LocalJavaPort = 25565
+	}
+	if body.LocalBedrockPort <= 0 {
+		body.LocalBedrockPort = 19132
+	}
+	st, err := s.relay.Start(body.RelayAddr, body.Secret, body.LocalJavaPort, body.LocalBedrockPort, body.WantJava, body.WantBedrock)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleRelayStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.relay.Stop()
+	writeJSON(w, http.StatusOK, s.relay.Status())
 }
 
 // --- WebSocket ---

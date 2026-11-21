@@ -112,7 +112,7 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
     : lines;
 
   return (
-    <div className="glass-panel flex h-[calc(100vh-11rem)] min-h-[480px] flex-col overflow-hidden rounded-3xl">
+    <div className="glass-panel flex h-[calc(100vh-7.5rem)] min-h-[340px] flex-col overflow-hidden rounded-3xl">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
         <div className="flex items-center gap-2.5">
           <Terminal className="h-5 w-5 text-emerald-400" />

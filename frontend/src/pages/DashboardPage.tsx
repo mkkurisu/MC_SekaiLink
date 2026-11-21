@@ -21,13 +21,15 @@ import {
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { apiFetch, formatUptime } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
-import { ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
+import { BoreState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
 interface Props {
   server: ServerInstance | null;
   system: SystemOverview | null;
   tunnel: TunnelState | null;
+  bore: BoreState | null;
+  relay: RelayState | null;
   lang: Lang;
   onRefresh: () => void;
   onOpenCreate: () => void;
@@ -44,6 +46,8 @@ export const DashboardPage: React.FC<Props> = ({
   server,
   system,
   tunnel,
+  bore,
+  relay,
   lang,
   onRefresh,
   onOpenCreate,
@@ -53,6 +57,7 @@ export const DashboardPage: React.FC<Props> = ({
   const [metrics, setMetrics] = useState<ServerMetrics | null>(null);
   const [history, setHistory] = useState<MetricPoint[]>([]);
   const [busy, setBusy] = useState(false);
+  const [quickOpeningBore, setQuickOpeningBore] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string>('');
   const [qrValue, setQrValue] = useState<{ title: string; value: string } | null>(null);
   const [error, setError] = useState('');
@@ -144,6 +149,36 @@ export const DashboardPage: React.FC<Props> = ({
   const bedrockLocal = `${localIP}:${server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort}`;
   const showJava = server.engine !== 'bds' && server.engine !== 'powernukkitx';
   const showBedrock = server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx';
+  const isPureJava = showJava && !server.crossPlay?.enabled;
+
+  const publicJava =
+    (bore?.running && bore.address) ||
+    (relay?.running && relay.javaAddress) ||
+    tunnel?.javaAddress ||
+    '';
+  const publicJavaLabel = bore?.running && bore.address ? 'Dis Baglanti (bore.pub)' : relay?.running && relay.javaAddress ? 'Dis Baglanti (SekaiLink Relay)' : t.dashboard.publicTunnel;
+
+  const publicBedrock =
+    (relay?.running && relay.bedrockAddress) ||
+    tunnel?.bedrockAddress ||
+    '';
+  const publicBedrockLabel = relay?.running && relay.bedrockAddress ? 'Dis Baglanti (SekaiLink Relay)' : t.dashboard.publicTunnel;
+
+  const startQuickBore = async () => {
+    setQuickOpeningBore(true);
+    setError('');
+    try {
+      await apiFetch('/api/network/bore/start', {
+        method: 'POST',
+        body: JSON.stringify({ serverHost: 'bore.pub', localPort: server.javaPort }),
+      });
+      onRefresh();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Hizli tunel baslatilamadi');
+    } finally {
+      setQuickOpeningBore(false);
+    }
+  };
 
   const statusColors: Record<string, string> = {
     online: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
@@ -263,15 +298,24 @@ export const DashboardPage: React.FC<Props> = ({
                 onCopy={() => copyAddr('jlan', javaLocal)}
                 onQr={() => setQrValue({ title: 'Java LAN Adresi', value: javaLocal })}
               />
-              {tunnel?.javaAddress ? (
+              {publicJava ? (
                 <AddressRow
-                  label={t.dashboard.publicTunnel}
-                  value={tunnel.javaAddress}
+                  label={publicJavaLabel}
+                  value={publicJava}
                   highlight
                   copied={copiedKey === 'jpub'}
-                  onCopy={() => copyAddr('jpub', tunnel.javaAddress)}
-                  onQr={() => setQrValue({ title: 'Java Dis Baglanti', value: tunnel.javaAddress })}
+                  onCopy={() => copyAddr('jpub', publicJava)}
+                  onQr={() => setQrValue({ title: 'Java Dis Baglanti', value: publicJava })}
                 />
+              ) : isPureJava ? (
+                <button
+                  disabled={quickOpeningBore}
+                  onClick={startQuickBore}
+                  className="flex w-full items-center justify-between rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
+                >
+                  <span>{quickOpeningBore ? 'Hesapsiz tunel aciliyor...' : 'Tek Tikla Disa Ac (bore.pub — Hesapsiz)'}</span>
+                  <Zap className="h-3.5 w-3.5" />
+                </button>
               ) : (
                 <button
                   onClick={() => onNavigate('network')}
@@ -304,14 +348,14 @@ export const DashboardPage: React.FC<Props> = ({
                 onCopy={() => copyAddr('blan', bedrockLocal)}
                 onQr={() => setQrValue({ title: 'Bedrock LAN Adresi', value: bedrockLocal })}
               />
-              {tunnel?.bedrockAddress ? (
+              {publicBedrock ? (
                 <AddressRow
-                  label={t.dashboard.publicTunnel}
-                  value={tunnel.bedrockAddress}
+                  label={publicBedrockLabel}
+                  value={publicBedrock}
                   highlight
                   copied={copiedKey === 'bpub'}
-                  onCopy={() => copyAddr('bpub', tunnel.bedrockAddress)}
-                  onQr={() => setQrValue({ title: 'Bedrock Dis Baglanti', value: tunnel.bedrockAddress })}
+                  onCopy={() => copyAddr('bpub', publicBedrock)}
+                  onQr={() => setQrValue({ title: 'Bedrock Dis Baglanti', value: publicBedrock })}
                 />
               ) : (
                 <button

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, getRemoteConnection } from './lib/api';
 import { Lang, translations } from './lib/i18n';
-import { AppConfig, ServerInstance, SystemOverview, TunnelState } from './types';
+import { AppConfig, BoreState, RelayState, ServerInstance, SystemOverview, TunnelState } from './types';
 import { CreateServerModal } from './components/CreateServerModal';
 import { DashboardPage } from './pages/DashboardPage';
 import { ConsolePage } from './pages/ConsolePage';
@@ -34,20 +34,32 @@ export function App() {
   const [system, setSystem] = useState<SystemOverview | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [tunnel, setTunnel] = useState<TunnelState | null>(null);
+  const [bore, setBore] = useState<BoreState | null>(null);
+  const [relay, setRelay] = useState<RelayState | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+
+  const refreshTunnels = () => {
+    apiFetch<TunnelState>('/api/network/playit/status').then(setTunnel).catch(() => {});
+    apiFetch<BoreState>('/api/network/bore/status').then(setBore).catch(() => {});
+    apiFetch<RelayState>('/api/network/relay/status').then(setRelay).catch(() => {});
+  };
 
   const loadAll = async () => {
     try {
-      const [srvs, sys, cfg, tun] = await Promise.all([
+      const [srvs, sys, cfg, tun, br, rl] = await Promise.all([
         apiFetch<ServerInstance[]>('/api/servers'),
         apiFetch<SystemOverview>('/api/system'),
         apiFetch<AppConfig>('/api/config'),
         apiFetch<TunnelState>('/api/network/playit/status'),
+        apiFetch<BoreState>('/api/network/bore/status'),
+        apiFetch<RelayState>('/api/network/relay/status'),
       ]);
       setServers(srvs || []);
       setSystem(sys);
       setConfig(cfg);
       setTunnel(tun);
+      setBore(br);
+      setRelay(rl);
       if (cfg?.language === 'en' || cfg?.language === 'tr') {
         setLang(cfg.language);
       }
@@ -65,7 +77,7 @@ export function App() {
     loadAll();
     const timer = setInterval(() => {
       apiFetch<ServerInstance[]>('/api/servers').then((s) => setServers(s || [])).catch(() => {});
-      apiFetch<TunnelState>('/api/network/playit/status').then(setTunnel).catch(() => {});
+      refreshTunnels();
     }, 3500);
     return () => clearInterval(timer);
   }, []);
@@ -215,6 +227,8 @@ export function App() {
                   server={activeServer}
                   system={system}
                   tunnel={tunnel}
+                  bore={bore}
+                  relay={relay}
                   lang={lang}
                   onRefresh={loadAll}
                   onOpenCreate={() => setCreateOpen(true)}
@@ -231,7 +245,9 @@ export function App() {
                   system={system}
                   config={config}
                   tunnel={tunnel}
-                  onRefreshTunnel={() => apiFetch<TunnelState>('/api/network/playit/status').then(setTunnel).catch(() => {})}
+                  bore={bore}
+                  relay={relay}
+                  onRefreshTunnel={refreshTunnels}
                   onRefreshConfig={() => apiFetch<AppConfig>('/api/config').then(setConfig).catch(() => {})}
                 />
               )}

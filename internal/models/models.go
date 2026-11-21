@@ -232,6 +232,25 @@ type TunnelState struct {
 	LastError      string   `json:"lastError,omitempty"`
 }
 
+type BoreState struct {
+	Running    bool   `json:"running"`
+	ServerHost string `json:"serverHost"`
+	LocalPort  int    `json:"localPort"`
+	RemotePort int    `json:"remotePort"`
+	Address    string `json:"address"`
+	LastError  string `json:"lastError,omitempty"`
+}
+
+type RelayState struct {
+	Running          bool   `json:"running"`
+	RelayAddr        string `json:"relayAddr"`
+	LocalJavaPort    int    `json:"localJavaPort"`
+	LocalBedrockPort int    `json:"localBedrockPort"`
+	JavaAddress      string `json:"javaAddress"`
+	BedrockAddress   string `json:"bedrockAddress"`
+	LastError        string `json:"lastError,omitempty"`
+}
+
 type WSMessage struct {
 	Type string `json:"type"` // "console", "history", "status", "metrics", "install_progress", "error"
 	Data any    `json:"data"`
