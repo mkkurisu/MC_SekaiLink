@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Cpu, Download, Loader2, Save, Settings, Trash2 } from 'lucide-react';
+import { Cpu, Download, Loader2, Save, Settings, Trash2, Zap } from 'lucide-react';
 import { apiFetch, getAndroidBridge } from '../lib/api';
 import { JVMPreset, ServerInstance, SystemOverview } from '../types';
 
@@ -35,6 +35,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
   const [offlineMode, setOfflineMode] = useState(false);
   const [props, setProps] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const [installingJava, setInstallingJava] = useState(false);
   const [msg, setMsg] = useState('');
 
@@ -93,6 +94,24 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
       setMsg(e instanceof Error ? e.message : 'Kaydetme hatasi');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleOptimizeLag = async () => {
+    if (!server) return;
+    setOptimizing(true);
+    setMsg('');
+    try {
+      const updated = await apiFetch<Record<string, string>>(`/api/servers/${server.id}/optimize-lag`, {
+        method: 'POST',
+      });
+      setProps(updated);
+      setMsg('Dusuk lag ayarlari uygulandi (view-distance=8, simulation-distance=6, sync-chunk-writes=false). Etkinlesmesi icin sunucuyu yeniden baslatin.');
+      onRefresh();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : 'Lag optimizasyonu basarisiz');
+    } finally {
+      setOptimizing(false);
     }
   };
 
@@ -271,6 +290,37 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
           )}
         </div>
       </div>
+
+      {/* Low-Lag Optimization Card */}
+      {(() => {
+        const viewDist = Number(props['view-distance'] || 0);
+        const highViewDist = viewDist > 12;
+        return (
+          <div className={`rounded-2xl border p-5 ${highViewDist ? 'border-amber-500/40 bg-amber-500/10' : 'border-emerald-500/25 bg-emerald-500/5'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm font-bold text-white">
+                  <Zap className={`h-4 w-4 ${highViewDist ? 'text-amber-400' : 'text-emerald-400'}`} />
+                  Lag Optimizasyonu &amp; Tunel Ag Verimliligi
+                </h3>
+                <p className="mt-1 text-xs text-slate-300">
+                  {highViewDist
+                    ? `Dikkat: Mevcut view-distance=${viewDist} cok yuksek! Yuksek chunk gorus mesafesi ev interneti ve tunellerde paket birikmesine (blok kirma / hasar lagina) yol acar.`
+                    : 'Chunk mesafesini ve disk yazimini tuneller + ayni PC barindirma icin en akici seviyeye getirir (view-distance=8, simulation-distance=6, sync-chunk-writes=false).'}
+                </p>
+              </div>
+              <button
+                disabled={optimizing}
+                onClick={handleOptimizeLag}
+                className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:brightness-110 disabled:opacity-50"
+              >
+                {optimizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
+                Tek Tikla Dusuk Lag Optimizasyonu Uygula
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* server.properties Editor */}
       <div className="glass-card rounded-2xl p-6">

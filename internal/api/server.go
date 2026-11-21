@@ -30,6 +30,7 @@ type Server struct {
 	manager  *engine.Manager
 	playit   *network.PlayitManager
 	bore     *network.BoreManager
+	e4mc     *network.E4mcManager
 	relay    *network.RelayManager
 	staticFS fs.FS
 
@@ -47,6 +48,7 @@ func NewServer(store *storage.Store, manager *engine.Manager, playit *network.Pl
 		manager:  manager,
 		playit:   playit,
 		bore:     network.NewBoreManager(),
+		e4mc:     network.NewE4mcManager(),
 		relay:    network.NewRelayManager(),
 		staticFS: staticFS,
 		upgrader: websocket.Upgrader{
@@ -115,6 +117,9 @@ func (s *Server) RestartListening() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.e4mc != nil {
+		_ = s.e4mc.Stop()
+	}
 	if s.bore != nil {
 		_ = s.bore.Stop()
 	}
@@ -165,6 +170,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/servers/{id}/players", s.handleGetPlayers)
 	mux.HandleFunc("GET /api/servers/{id}/properties", s.handleGetProperties)
 	mux.HandleFunc("PUT /api/servers/{id}/properties", s.handleUpdateProperties)
+	mux.HandleFunc("POST /api/servers/{id}/optimize-lag", s.handleOptimizeServerLag)
 
 	// Modrinth & Addons
 	mux.HandleFunc("GET /api/modrinth/search", s.handleModrinthSearch)
@@ -201,6 +207,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/network/playit/install", s.handlePlayitInstall)
 	mux.HandleFunc("POST /api/network/playit/start", s.handlePlayitStart)
 	mux.HandleFunc("POST /api/network/playit/stop", s.handlePlayitStop)
+	mux.HandleFunc("GET /api/network/e4mc/status", s.handleE4mcStatus)
+	mux.HandleFunc("POST /api/network/e4mc/start", s.handleE4mcStart)
+	mux.HandleFunc("POST /api/network/e4mc/stop", s.handleE4mcStop)
 	mux.HandleFunc("GET /api/network/bore/status", s.handleBoreStatus)
 	mux.HandleFunc("POST /api/network/bore/start", s.handleBoreStart)
 	mux.HandleFunc("POST /api/network/bore/stop", s.handleBoreStop)
@@ -636,6 +645,20 @@ func (s *Server) handleUpdateProperties(w http.ResponseWriter, r *http.Request) 
 	if changed {
 		_ = s.store.SaveInstance(inst)
 		_ = engine.SyncOfflineMode(inst)
+	}
+	writeJSON(w, http.StatusOK, props)
+}
+
+func (s *Server) handleOptimizeServerLag(w http.ResponseWriter, r *http.Request) {
+	inst, err := s.store.GetInstance(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	props, err := engine.OptimizeLowLagProperties(inst)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, props)
 }
@@ -1136,6 +1159,32 @@ func (s *Server) handlePlayitStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.playit.Status())
+}
+
+func (s *Server) handleE4mcStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.e4mc.Status())
+}
+
+func (s *Server) handleE4mcStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BrokerURL string `json:"brokerUrl"`
+		LocalPort int    `json:"localPort"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.LocalPort <= 0 {
+		body.LocalPort = 25565
+	}
+	st, err := s.e4mc.Start(body.BrokerURL, body.LocalPort)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleE4mcStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.e4mc.Stop()
+	writeJSON(w, http.StatusOK, s.e4mc.Status())
 }
 
 func (s *Server) handleBoreStatus(w http.ResponseWriter, r *http.Request) {

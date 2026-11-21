@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/huin/goupnp v1.3.0
+	github.com/quic-go/quic-go v0.65.0
 	github.com/shirou/gopsutil/v4 v4.25.2
 	github.com/wailsapp/wails/v2 v2.17.1
 )

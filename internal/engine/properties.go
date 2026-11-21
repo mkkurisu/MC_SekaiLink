@@ -78,25 +78,28 @@ func WriteProperties(serverDir string, props map[string]string) error {
 
 func DefaultJavaProperties() map[string]string {
 	return map[string]string{
-		"motd":                   "MC SekaiLink Sunucusu",
-		"server-port":            "25565",
-		"gamemode":               "survival",
-		"difficulty":             "normal",
-		"max-players":            "20",
-		"online-mode":            "true",
-		"enforce-secure-profile": "true",
-		"pvp":                    "true",
-		"white-list":             "false",
-		"allow-flight":           "false",
-		"view-distance":          "10",
-		"simulation-distance":    "8",
-		"level-name":             "world",
-		"level-seed":             "",
-		"enable-command-block":   "false",
-		"spawn-protection":       "0",
-		"resource-pack":          "",
-		"resource-pack-sha1":     "",
-		"require-resource-pack":  "false",
+		"motd":                              "MC SekaiLink Sunucusu",
+		"server-port":                       "25565",
+		"gamemode":                          "survival",
+		"difficulty":                        "normal",
+		"max-players":                       "20",
+		"online-mode":                       "true",
+		"enforce-secure-profile":            "true",
+		"pvp":                               "true",
+		"white-list":                        "false",
+		"allow-flight":                      "false",
+		"view-distance":                     "8",
+		"simulation-distance":               "6",
+		"sync-chunk-writes":                 "false",
+		"network-compression-threshold":     "256",
+		"entity-broadcast-range-percentage": "85",
+		"level-name":                        "world",
+		"level-seed":                        "",
+		"enable-command-block":              "false",
+		"spawn-protection":                  "0",
+		"resource-pack":                     "",
+		"resource-pack-sha1":                "",
+		"require-resource-pack":             "false",
 	}
 }
 
@@ -206,4 +209,39 @@ func SyncOfflineMode(inst models.ServerInstance) error {
 		}
 	}
 	return nil
+}
+
+// OptimizeLowLagProperties applies low-latency chunk, compression, and disk I/O defaults
+// to an existing server's server.properties so tunnels and local hosts experience minimal lag.
+func OptimizeLowLagProperties(inst models.ServerInstance) (map[string]string, error) {
+	if inst.Path == "" {
+		return nil, fmt.Errorf("sunucu dizini gecersiz")
+	}
+	var props map[string]string
+	switch inst.Engine {
+	case models.EngineBDS, models.EnginePowerNukkitX:
+		props = DefaultBedrockProperties()
+		if _, err := os.Stat(filepath.Join(inst.Path, "server.properties")); err == nil {
+			if loaded, err := ReadProperties(inst.Path); err == nil {
+				props = loaded
+			}
+		}
+		props["view-distance"] = "10"
+		props["tick-distance"] = "4"
+	default:
+		var err error
+		props, err = ReadProperties(inst.Path)
+		if err != nil {
+			return nil, err
+		}
+		props["view-distance"] = "8"
+		props["simulation-distance"] = "6"
+		props["sync-chunk-writes"] = "false"
+		props["network-compression-threshold"] = "256"
+		props["entity-broadcast-range-percentage"] = "85"
+	}
+	if err := WriteProperties(inst.Path, props); err != nil {
+		return nil, err
+	}
+	return props, nil
 }

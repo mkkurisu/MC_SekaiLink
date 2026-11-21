@@ -21,7 +21,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
-import { AppConfig, BoreState, NetworkDiagnostics, RelayState, ServerInstance, SystemOverview, TunnelState } from '../types';
+import { AppConfig, BoreState, E4mcState, NetworkDiagnostics, RelayState, ServerInstance, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
 interface Props {
@@ -30,6 +30,7 @@ interface Props {
   config: AppConfig | null;
   tunnel: TunnelState | null;
   bore: BoreState | null;
+  e4mc: E4mcState | null;
   relay: RelayState | null;
   onRefreshTunnel: () => void;
   onRefreshConfig: () => void;
@@ -41,6 +42,7 @@ export const NetworkPage: React.FC<Props> = ({
   config,
   tunnel,
   bore,
+  e4mc,
   relay,
   onRefreshTunnel,
   onRefreshConfig,
@@ -48,6 +50,7 @@ export const NetworkPage: React.FC<Props> = ({
   const [diag, setDiag] = useState<NetworkDiagnostics | null>(null);
   const [loadingDiag, setLoadingDiag] = useState(false);
   const [busyPlayit, setBusyPlayit] = useState(false);
+  const [busyE4mc, setBusyE4mc] = useState(false);
   const [busyBore, setBusyBore] = useState(false);
   const [busyRelay, setBusyRelay] = useState(false);
   const [busyUpnp, setBusyUpnp] = useState(false);
@@ -88,6 +91,34 @@ export const NetworkPage: React.FC<Props> = ({
       // ignore
     } finally {
       setLoadingDiag(false);
+    }
+  };
+
+  const startE4mc = async () => {
+    setBusyE4mc(true);
+    setMsg('');
+    try {
+      const localPort = server?.javaPort || 25565;
+      const st = await apiFetch<E4mcState>('/api/network/e4mc/start', {
+        method: 'POST',
+        body: JSON.stringify({ localPort }),
+      });
+      setMsg(`Dusuk pingli e4mc (${st.region}) tuneli acildi! Java adresin: ${st.domain}`);
+      onRefreshTunnel();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : 'e4mc QUIC tuneli baslatilamadi');
+    } finally {
+      setBusyE4mc(false);
+    }
+  };
+
+  const stopE4mc = async () => {
+    setBusyE4mc(true);
+    try {
+      await apiFetch('/api/network/e4mc/stop', { method: 'POST' });
+      onRefreshTunnel();
+    } finally {
+      setBusyE4mc(false);
     }
   };
 
@@ -228,21 +259,101 @@ export const NetworkPage: React.FC<Props> = ({
   const pairingUrl = `http://${diag?.localIP || system?.localIP || '127.0.0.1'}:${config?.apiPort || 25580}`;
   const pairingPayload = JSON.stringify({ url: pairingUrl, token: config?.pairingToken || '' });
 
+  const renderE4mcCard = (compact?: boolean) => (
+    <div className="glass-panel rounded-3xl border border-emerald-500/25 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Zap className="h-5 w-5 text-emerald-400" />
+            <h3 className="text-base font-bold text-white">
+              Dusuk Ping Java Tuneli (e4mc — Otomatik En Yakin Bolge)
+            </h3>
+            <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-300">
+              Hesapsiz • Avrupa/Global
+            </span>
+            {e4mc?.running && (
+              <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-200">
+                {e4mc.region || 'EU'} • {e4mc.latencyMs} ms
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Almanya/Avrupa QUIC aktarim noktasina baglanir ve port gerektirmeyen temiz <code>*.e4mc.link</code> adresi verir. Hesap veya ek uygulama gerektirmez.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {!e4mc?.running ? (
+            <button
+              disabled={busyE4mc}
+              onClick={startE4mc}
+              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110 disabled:opacity-50"
+            >
+              {busyE4mc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+              Tek Tikla Baslat (Dusuk Ping)
+            </button>
+          ) : (
+            <button
+              disabled={busyE4mc}
+              onClick={stopE4mc}
+              className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
+            >
+              <Square className="h-4 w-4 fill-current" />
+              Tuneli Kapat
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!compact && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2 text-[11px] text-emerald-200">
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+          <span>
+            Sunucu sahibiysen bu bilgisayardan <code className="font-mono text-white">localhost:{server?.javaPort || 25565}</code> adresiyle baglan (0 ms lag). Dis adresi yalnizca baska evdeki arkadaslarin kullansin.
+          </span>
+        </div>
+      )}
+
+      {e4mc?.running && e4mc.domain && (
+        <div className="mt-4">
+          <CopyBox
+            label={`Uzaktaki Arkadaslarin Icin Java Adresi (${e4mc.region || 'EU'} • ${e4mc.latencyMs} ms)`}
+            value={e4mc.domain}
+            copied={copiedKey === 'e4mc'}
+            onCopy={() => copyText('e4mc', e4mc.domain)}
+            onQr={() => setQrModal({ title: 'e4mc Java Adresi', subtitle: 'Minecraft Java > Dogrudan Baglanti (Port gerekmez)', value: e4mc.domain })}
+          />
+        </div>
+      )}
+
+      {e4mc?.lastError && !e4mc.running && (
+        <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
+          {e4mc.lastError}
+        </div>
+      )}
+    </div>
+  );
+
   const renderBoreCard = (compact?: boolean) => (
     <div className="glass-panel rounded-3xl p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
-            <Zap className="h-5 w-5 text-emerald-400" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Zap className="h-5 w-5 text-amber-400" />
             <h3 className="text-base font-bold text-white">
-              Hizli Java Tuneli (bore.pub)
+              TCP Yedek Tuneli (bore.pub — ABD / Ozel Sunucu)
             </h3>
-            <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-300">
-              Hesapsiz • Uygulama Ici
+            <span className="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-amber-300">
+              Hesapsiz • TCP Fallback
             </span>
+            {bore?.running && bore.latencyMs ? (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">
+                {bore.latencyMs} ms
+              </span>
+            ) : null}
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            Tarayici veya hesap acmadan tek tikla dogrudan Java (TCP) adresi olusturur. Windows, Linux ve Android&apos;de harici dosya olmadan calisir.
+            Genel <code>bore.pub</code> sunucusu ABD merkezlidir (Turkiye/Avrupa&apos;dan ping yuksektir). UDP/QUIC engelli aglarda TCP yedegi olarak veya kendi Avrupa <code>bore</code> sunucunla kullan.
           </p>
         </div>
 
@@ -514,24 +625,34 @@ export const NetworkPage: React.FC<Props> = ({
             highlight={diag?.behindCGNAT ? 'warn' : 'ok'}
           />
         </div>
+
+        {(diag?.e4mcPingMs || diag?.playitPingMs || diag?.borePingMs) ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3 text-xs">
+            <span className="text-slate-400">Canli Tunel Pingi:</span>
+            {diag.e4mcPingMs ? <PingPill label={`e4mc (${diag.e4mcRegion || 'EU'})`} ms={diag.e4mcPingMs} /> : null}
+            {diag.playitPingMs ? <PingPill label="playit.gg (Anycast)" ms={diag.playitPingMs} /> : null}
+            {diag.borePingMs ? <PingPill label="bore.pub (ABD)" ms={diag.borePingMs} /> : null}
+          </div>
+        ) : null}
       </div>
 
       {/* Server-Aware Tunnel Section */}
       {isPureJava ? (
         <>
-          {renderBoreCard()}
+          {renderE4mcCard()}
           <div className="glass-card rounded-2xl">
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="flex w-full items-center justify-between px-5 py-3.5 text-left text-xs font-semibold text-slate-300 hover:text-white"
             >
-              <span>Sabit Alan Adi / Gelismis Tuneller (SekaiLink Relay &amp; playit.gg)</span>
+              <span>Diger Tuneller &amp; Sabit Alan Adi (playit.gg Anycast, bore.pub TCP Yedek, SekaiLink Relay)</span>
               {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </button>
             {showAdvanced && (
               <div className="space-y-4 border-t border-white/10 p-4">
-                {renderRelayCard()}
                 {renderPlayitCard()}
+                {renderBoreCard()}
+                {renderRelayCard()}
               </div>
             )}
           </div>
@@ -548,7 +669,12 @@ export const NetworkPage: React.FC<Props> = ({
           )}
           {renderPlayitCard()}
           {renderRelayCard()}
-          {isCrossPlay && renderBoreCard(true)}
+          {isCrossPlay && (
+            <div className="space-y-4">
+              {renderE4mcCard(true)}
+              {renderBoreCard(true)}
+            </div>
+          )}
         </>
       )}
 
@@ -651,6 +777,20 @@ const InfoBox: React.FC<{ label: string; value: string; highlight?: 'ok' | 'warn
     <div className="mt-1 truncate font-mono text-xs font-semibold text-white">{value}</div>
   </div>
 );
+
+const PingPill: React.FC<{ label: string; ms: number }> = ({ label, ms }) => {
+  const cls =
+    ms <= 110
+      ? 'border-emerald-500/35 bg-emerald-500/15 text-emerald-200'
+      : ms <= 150
+        ? 'border-amber-500/35 bg-amber-500/15 text-amber-200'
+        : 'border-rose-500/35 bg-rose-500/15 text-rose-200';
+  return (
+    <span className={`rounded-full border px-2.5 py-0.5 font-mono text-[11px] font-semibold ${cls}`}>
+      {label}: {ms} ms
+    </span>
+  );
+};
 
 const CopyBox: React.FC<{
   label: string;

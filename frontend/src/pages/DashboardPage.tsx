@@ -21,7 +21,7 @@ import {
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { apiFetch, formatUptime } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
-import { BoreState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
+import { BoreState, E4mcState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
 interface Props {
@@ -29,6 +29,7 @@ interface Props {
   system: SystemOverview | null;
   tunnel: TunnelState | null;
   bore: BoreState | null;
+  e4mc: E4mcState | null;
   relay: RelayState | null;
   lang: Lang;
   onRefresh: () => void;
@@ -47,6 +48,7 @@ export const DashboardPage: React.FC<Props> = ({
   system,
   tunnel,
   bore,
+  e4mc,
   relay,
   lang,
   onRefresh,
@@ -57,7 +59,7 @@ export const DashboardPage: React.FC<Props> = ({
   const [metrics, setMetrics] = useState<ServerMetrics | null>(null);
   const [history, setHistory] = useState<MetricPoint[]>([]);
   const [busy, setBusy] = useState(false);
-  const [quickOpeningBore, setQuickOpeningBore] = useState(false);
+  const [quickOpeningTunnel, setQuickOpeningTunnel] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string>('');
   const [qrValue, setQrValue] = useState<{ title: string; value: string } | null>(null);
   const [error, setError] = useState('');
@@ -145,38 +147,59 @@ export const DashboardPage: React.FC<Props> = ({
   const isOnline = status === 'online';
   const isBusyState = status === 'starting' || status === 'stopping' || status === 'installing';
   const localIP = system?.localIP || '127.0.0.1';
+  const javaHostLocal = `localhost:${server.javaPort}`;
   const javaLocal = `${localIP}:${server.javaPort}`;
   const bedrockLocal = `${localIP}:${server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort}`;
   const showJava = server.engine !== 'bds' && server.engine !== 'powernukkitx';
   const showBedrock = server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx';
   const isPureJava = showJava && !server.crossPlay?.enabled;
 
+  const e4mcActive = Boolean(e4mc?.running && e4mc.domain);
+  const playitJavaActive = Boolean(tunnel?.running && tunnel.javaAddress);
+  const relayJavaActive = Boolean(relay?.running && relay.javaAddress);
+  const boreActive = Boolean(bore?.running && bore.address);
+
   const publicJava =
-    (bore?.running && bore.address) ||
-    (relay?.running && relay.javaAddress) ||
-    tunnel?.javaAddress ||
+    (e4mcActive && e4mc!.domain) ||
+    (playitJavaActive && tunnel!.javaAddress) ||
+    (relayJavaActive && relay!.javaAddress) ||
+    (boreActive && bore!.address) ||
     '';
-  const publicJavaLabel = bore?.running && bore.address ? 'Dis Baglanti (bore.pub)' : relay?.running && relay.javaAddress ? 'Dis Baglanti (SekaiLink Relay)' : t.dashboard.publicTunnel;
+
+  let publicJavaLabel: string = t.dashboard.publicTunnel;
+  if (e4mcActive) {
+    const pingText = e4mc!.latencyMs > 0 ? ` • ${e4mc!.latencyMs} ms` : '';
+    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (e4mc • ${e4mc!.region || 'EU'}${pingText})`;
+  } else if (playitJavaActive) {
+    publicJavaLabel = 'Uzaktaki Arkadaslarin Icin (playit.gg)';
+  } else if (relayJavaActive) {
+    const pingText = relay!.latencyMs ? ` • ${relay!.latencyMs} ms` : '';
+    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (SekaiLink Relay${pingText})`;
+  } else if (boreActive) {
+    const pingText = bore!.latencyMs ? ` • ${bore!.latencyMs} ms` : '';
+    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (bore.pub${pingText})`;
+  }
 
   const publicBedrock =
+    (tunnel?.running && tunnel.bedrockAddress) ||
     (relay?.running && relay.bedrockAddress) ||
-    tunnel?.bedrockAddress ||
     '';
-  const publicBedrockLabel = relay?.running && relay.bedrockAddress ? 'Dis Baglanti (SekaiLink Relay)' : t.dashboard.publicTunnel;
+  const publicBedrockLabel = tunnel?.running && tunnel.bedrockAddress ? t.dashboard.publicTunnel : 'Dis Baglanti (SekaiLink Relay)';
 
-  const startQuickBore = async () => {
-    setQuickOpeningBore(true);
+  const startQuickE4mc = async () => {
+    setQuickOpeningTunnel(true);
     setError('');
     try {
-      await apiFetch('/api/network/bore/start', {
+      await apiFetch('/api/network/e4mc/start', {
         method: 'POST',
-        body: JSON.stringify({ serverHost: 'bore.pub', localPort: server.javaPort }),
+        body: JSON.stringify({ localPort: server.javaPort }),
       });
       onRefresh();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Hizli tunel baslatilamadi');
+      const reason = e instanceof Error ? e.message : 'e4mc QUIC tuneli acilamadi';
+      setError(`${reason} — UDP/QUIC engelli ise "Dis Baglanti & Ag" sekmesinden bore.pub veya playit.gg deneyebilirsiniz.`);
     } finally {
-      setQuickOpeningBore(false);
+      setQuickOpeningTunnel(false);
     }
   };
 
@@ -292,29 +315,42 @@ export const DashboardPage: React.FC<Props> = ({
             </div>
             <div className="mt-3 space-y-2">
               <AddressRow
-                label={t.dashboard.localLan}
+                label="Senin Girisin (Bu PC — 0 ms Lag)"
+                value={javaHostLocal}
+                badge="0 ms"
+                copied={copiedKey === 'jhost'}
+                onCopy={() => copyAddr('jhost', javaHostLocal)}
+                onQr={() => setQrValue({ title: 'Bu Bilgisayar (0 ms)', value: javaHostLocal })}
+              />
+              <AddressRow
+                label="Ayni Wi-Fi / LAN (1 ms)"
                 value={javaLocal}
                 copied={copiedKey === 'jlan'}
                 onCopy={() => copyAddr('jlan', javaLocal)}
                 onQr={() => setQrValue({ title: 'Java LAN Adresi', value: javaLocal })}
               />
               {publicJava ? (
-                <AddressRow
-                  label={publicJavaLabel}
-                  value={publicJava}
-                  highlight
-                  copied={copiedKey === 'jpub'}
-                  onCopy={() => copyAddr('jpub', publicJava)}
-                  onQr={() => setQrValue({ title: 'Java Dis Baglanti', value: publicJava })}
-                />
+                <>
+                  <AddressRow
+                    label={publicJavaLabel}
+                    value={publicJava}
+                    highlight
+                    copied={copiedKey === 'jpub'}
+                    onCopy={() => copyAddr('jpub', publicJava)}
+                    onQr={() => setQrValue({ title: 'Java Dis Baglanti', value: publicJava })}
+                  />
+                  <p className="px-1 text-[11px] text-cyan-200/80">
+                    Bu bilgisayardan oynarken daima <code className="font-mono text-emerald-300">{javaHostLocal}</code> kullan (0 ms lag). Dis adresi yalnizca uzaktaki arkadaslarina ver.
+                  </p>
+                </>
               ) : isPureJava ? (
                 <button
-                  disabled={quickOpeningBore}
-                  onClick={startQuickBore}
+                  disabled={quickOpeningTunnel}
+                  onClick={startQuickE4mc}
                   className="flex w-full items-center justify-between rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
                 >
-                  <span>{quickOpeningBore ? 'Hesapsiz tunel aciliyor...' : 'Tek Tikla Disa Ac (bore.pub — Hesapsiz)'}</span>
-                  <Zap className="h-3.5 w-3.5" />
+                  <span>{quickOpeningTunnel ? 'e4mc (Avrupa) tuneli aciliyor...' : 'Tek Tikla Disa Ac (e4mc — Avrupa / Dusuk Ping, Hesapsiz)'}</span>
+                  <Zap className="h-3.5 w-3.5 shrink-0" />
                 </button>
               ) : (
                 <button
@@ -494,14 +530,20 @@ export const DashboardPage: React.FC<Props> = ({
 const AddressRow: React.FC<{
   label: string;
   value: string;
+  badge?: string;
   highlight?: boolean;
   copied: boolean;
   onCopy: () => void;
   onQr: () => void;
-}> = ({ label, value, highlight, copied, onCopy, onQr }) => (
+}> = ({ label, value, badge, highlight, copied, onCopy, onQr }) => (
   <div className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${highlight ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-white/10 bg-slate-950/60'}`}>
     <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-wider text-slate-400">{label}</div>
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-slate-400">
+        <span>{label}</span>
+        {badge && (
+          <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 font-mono text-[9px] font-bold text-emerald-300">{badge}</span>
+        )}
+      </div>
       <div className="truncate font-mono text-xs text-white">{value}</div>
     </div>
     <div className="flex shrink-0 items-center gap-1">

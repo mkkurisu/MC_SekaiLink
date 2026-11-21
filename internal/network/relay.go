@@ -367,10 +367,13 @@ func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedr
 
 	_ = rm.Stop()
 
+	dialStart := time.Now()
 	conn, err := net.DialTimeout("tcp", relayAddr, 5*time.Second)
 	if err != nil {
 		return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
 	}
+	latencyMs := time.Since(dialStart).Milliseconds()
+	tuneTCPConn(conn)
 
 	if err := writeLineJSON(conn, relayControlMsg{
 		Type:        "hello",
@@ -439,6 +442,7 @@ func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedr
 		LocalBedrockPort: localBedrockPort,
 		JavaAddress:      javaAddr,
 		BedrockAddress:   bedrockAddr,
+		LatencyMs:        latencyMs,
 	}
 	st := rm.state
 	rm.mu.Unlock()
@@ -518,6 +522,7 @@ func forwardRelayTCP(relayAddr, sessionID, connID string, localPort int) {
 	if err != nil {
 		return
 	}
+	tuneTCPConn(stream)
 	if err := writeLineJSON(stream, relayControlMsg{
 		Type:      "tcp_accept",
 		SessionID: sessionID,
@@ -531,6 +536,7 @@ func forwardRelayTCP(relayAddr, sessionID, connID string, localPort int) {
 		stream.Close()
 		return
 	}
+	tuneTCPConn(localConn)
 	pipeBidirectional(localConn, stream)
 }
 

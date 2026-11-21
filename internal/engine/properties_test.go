@@ -92,3 +92,55 @@ func TestSyncOfflineMode(t *testing.T) {
 		t.Fatalf("expected PNX xbox-auth=off, got %q", pnxProps["xbox-auth"])
 	}
 }
+
+func TestOptimizeLowLagPropertiesAndTurkishTPS(t *testing.T) {
+	javaDir := t.TempDir()
+	initial := DefaultJavaProperties()
+	initial["view-distance"] = "20"
+	initial["sync-chunk-writes"] = "true"
+	if err := WriteProperties(javaDir, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	props, err := OptimizeLowLagProperties(models.ServerInstance{
+		Engine: models.EnginePaper,
+		Path:   javaDir,
+	})
+	if err != nil {
+		t.Fatalf("OptimizeLowLagProperties(Java) failed: %v", err)
+	}
+	if props["view-distance"] != "8" || props["simulation-distance"] != "6" || props["sync-chunk-writes"] != "false" {
+		t.Fatalf("expected optimized java properties, got %+v", props)
+	}
+
+	bdsDir := t.TempDir()
+	bdsProps, err := OptimizeLowLagProperties(models.ServerInstance{
+		Engine: models.EngineBDS,
+		Path:   bdsDir,
+	})
+	if err != nil {
+		t.Fatalf("OptimizeLowLagProperties(BDS) failed: %v", err)
+	}
+	if bdsProps["view-distance"] != "10" || bdsProps["tick-distance"] != "4" {
+		t.Fatalf("expected optimized bedrock properties, got %+v", bdsProps)
+	}
+
+	// Verify Turkish/EU decimal comma TPS parsing
+	m := &Manager{
+		consoles: make(map[string]*consoleState),
+	}
+	m.processLineEvents("srv-test", "[21:44:30] [Server thread/INFO]: TPS from last 1m, 5m, 15m: 19,9, 20,0, 19,9")
+	cs := m.getConsole("srv-test")
+	if cs.tps != 19.9 {
+		t.Fatalf("expected TPS 19.9 from comma decimal log, got %v", cs.tps)
+	}
+
+	// Verify low-RAM Aikar args omit AlwaysPreTouch and use 4M regions
+	lowArgs := strings.Join(buildJVMArgs(2048, models.JVMAikar, 25), " ")
+	if strings.Contains(lowArgs, "AlwaysPreTouch") {
+		t.Fatalf("expected AlwaysPreTouch omitted for 2048MB heap, got %s", lowArgs)
+	}
+	if !strings.Contains(lowArgs, "G1HeapRegionSize=4M") || !strings.Contains(lowArgs, "MaxGCPauseMillis=100") {
+		t.Fatalf("expected tuned low-RAM G1 flags, got %s", lowArgs)
+	}
+}

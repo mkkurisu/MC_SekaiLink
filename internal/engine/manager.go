@@ -27,7 +27,7 @@ var (
 	playerJoinRe    = regexp.MustCompile(`(?i):\s+([A-Za-z0-9_.\- ]{1,32})\s*(?:\[/[^\]]+\])?\s+logged in with entity id|Player connected:\s*([^,]+)`)
 	playerLeaveRe   = regexp.MustCompile(`(?i):\s+([A-Za-z0-9_.\- ]{1,32})\s+lost connection|Player disconnected:\s*([^,]+)`)
 	serverReadyRe   = regexp.MustCompile(`Done \([^)]+\)! For help, type "help"|Server started\.|Listening on /`)
-	tpsLineRe       = regexp.MustCompile(`TPS from last 1m, 5m, 15m:\s*\*?([0-9]+(?:\.[0-9]+)?)`)
+	tpsLineRe       = regexp.MustCompile(`TPS from last 1m, 5m, 15m:\s*\*?([0-9]+(?:[.,][0-9]+)?)`)
 )
 
 type runningProc struct {
@@ -402,6 +402,9 @@ func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string
 		memoryMB = 512
 	}
 	xms := memoryMB / 2
+	if memoryMB <= 3072 && xms > 1024 {
+		xms = 1024
+	}
 	if xms < 512 {
 		xms = 512
 	}
@@ -412,16 +415,27 @@ func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string
 	}
 	switch preset {
 	case models.JVMAikar:
-		return append(base,
+		g1New := "30"
+		g1MaxNew := "40"
+		g1Region := "8M"
+		if memoryMB <= 4096 {
+			g1New = "25"
+			g1MaxNew = "35"
+			g1Region = "4M"
+		} else if memoryMB >= 12288 {
+			g1New = "40"
+			g1MaxNew = "50"
+			g1Region = "16M"
+		}
+		args := []string{
 			"-XX:+UseG1GC",
 			"-XX:+ParallelRefProcEnabled",
-			"-XX:MaxGCPauseMillis=200",
+			"-XX:MaxGCPauseMillis=100",
 			"-XX:+UnlockExperimentalVMOptions",
 			"-XX:+DisableExplicitGC",
-			"-XX:+AlwaysPreTouch",
-			"-XX:G1NewSizePercent=30",
-			"-XX:G1MaxNewSizePercent=40",
-			"-XX:G1HeapRegionSize=8M",
+			"-XX:G1NewSizePercent=" + g1New,
+			"-XX:G1MaxNewSizePercent=" + g1MaxNew,
+			"-XX:G1HeapRegionSize=" + g1Region,
 			"-XX:G1ReservePercent=20",
 			"-XX:G1HeapWastePercent=5",
 			"-XX:G1MixedGCCountTarget=4",
@@ -431,13 +445,19 @@ func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string
 			"-XX:SurvivorRatio=32",
 			"-XX:+PerfDisableSharedMem",
 			"-XX:MaxTenuringThreshold=1",
-		)
+		}
+		if memoryMB > 3072 {
+			args = append(args, "-XX:+AlwaysPreTouch")
+		}
+		return append(base, args...)
 	case models.JVMZGC:
 		zgcArgs := []string{"-XX:+UseZGC"}
 		if javaMajor > 0 && javaMajor < 24 {
 			zgcArgs = append(zgcArgs, "-XX:+ZGenerational")
 		}
-		zgcArgs = append(zgcArgs, "-XX:+AlwaysPreTouch")
+		if memoryMB > 3072 {
+			zgcArgs = append(zgcArgs, "-XX:+AlwaysPreTouch")
+		}
 		return append(base, zgcArgs...)
 	default:
 		return base
@@ -546,7 +566,8 @@ func (m *Manager) processLineEvents(id, line string) {
 	}
 
 	if match := tpsLineRe.FindStringSubmatch(line); len(match) >= 2 {
-		if tps, err := strconv.ParseFloat(match[1], 64); err == nil {
+		norm := strings.ReplaceAll(match[1], ",", ".")
+		if tps, err := strconv.ParseFloat(norm, 64); err == nil {
 			cs := m.getConsole(id)
 			cs.mu.Lock()
 			cs.tps = tps

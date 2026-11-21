@@ -177,6 +177,10 @@ export interface NetworkDiagnostics {
   behindCGNAT: boolean;
   status: string;
   recommendation: string;
+  e4mcRegion?: string;
+  e4mcPingMs?: number;
+  playitPingMs?: number;
+  borePingMs?: number;
 }
 
 export interface TunnelState {
@@ -197,6 +201,18 @@ export interface BoreState {
   localPort: number;
   remotePort: number;
   address: string;
+  latencyMs?: number;
+  lastError?: string;
+}
+
+export interface E4mcState {
+  running: boolean;
+  region: string;
+  relayHost: string;
+  localPort: number;
+  domain: string;
+  latencyMs: number;
+  notice?: string;
   lastError?: string;
 }
 
@@ -207,5 +223,6 @@ export interface RelayState {
   localBedrockPort: number;
   javaAddress: string;
   bedrockAddress: string;
+  latencyMs?: number;
   lastError?: string;
 }

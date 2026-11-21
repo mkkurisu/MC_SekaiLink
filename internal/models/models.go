@@ -211,13 +211,17 @@ type BackupInfo struct {
 }
 
 type NetworkDiagnostics struct {
-	LocalIP         string `json:"localIP"`
-	PublicIP        string `json:"publicIP"`
+	LocalIP          string `json:"localIP"`
+	PublicIP         string `json:"publicIP"`
 	RouterExternalIP string `json:"routerExternalIP"`
-	UPnPAvailable   bool   `json:"upnpAvailable"`
-	BehindCGNAT     bool   `json:"behindCGNAT"`
-	Status          string `json:"status"` // "direct_ok", "cgnat_detected", "unknown"
-	Recommendation  string `json:"recommendation"`
+	UPnPAvailable    bool   `json:"upnpAvailable"`
+	BehindCGNAT      bool   `json:"behindCGNAT"`
+	Status           string `json:"status"` // "direct_ok", "cgnat_detected", "unknown"
+	Recommendation   string `json:"recommendation"`
+	E4mcRegion       string `json:"e4mcRegion,omitempty"`
+	E4mcPingMs       int64  `json:"e4mcPingMs,omitempty"`
+	PlayitPingMs     int64  `json:"playitPingMs,omitempty"`
+	BorePingMs       int64  `json:"borePingMs,omitempty"`
 }
 
 type TunnelState struct {
@@ -238,7 +242,19 @@ type BoreState struct {
 	LocalPort  int    `json:"localPort"`
 	RemotePort int    `json:"remotePort"`
 	Address    string `json:"address"`
+	LatencyMs  int64  `json:"latencyMs,omitempty"`
 	LastError  string `json:"lastError,omitempty"`
+}
+
+type E4mcState struct {
+	Running   bool   `json:"running"`
+	Region    string `json:"region"`
+	RelayHost string `json:"relayHost"`
+	LocalPort int    `json:"localPort"`
+	Domain    string `json:"domain"`
+	LatencyMs int64  `json:"latencyMs"`
+	Notice    string `json:"notice,omitempty"`
+	LastError string `json:"lastError,omitempty"`
 }
 
 type RelayState struct {
@@ -248,6 +264,7 @@ type RelayState struct {
 	LocalBedrockPort int    `json:"localBedrockPort"`
 	JavaAddress      string `json:"javaAddress"`
 	BedrockAddress   string `json:"bedrockAddress"`
+	LatencyMs        int64  `json:"latencyMs,omitempty"`
 	LastError        string `json:"lastError,omitempty"`
 }
 

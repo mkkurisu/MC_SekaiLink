@@ -62,6 +62,7 @@ func (bm *BoreManager) Start(serverHost string, localPort int, secret string) (m
 
 	_ = bm.Stop()
 
+	dialStart := time.Now()
 	conn, err := net.DialTimeout("tcp", dialAddr, 5*time.Second)
 	if err != nil {
 		bm.mu.Lock()
@@ -73,6 +74,8 @@ func (bm *BoreManager) Start(serverHost string, localPort int, secret string) (m
 		bm.mu.Unlock()
 		return bm.Status(), fmt.Errorf("bore sunucusuna baglanilamadi (%s): %w", dialAddr, err)
 	}
+	latencyMs := time.Since(dialStart).Milliseconds()
+	tuneTCPConn(conn)
 
 	// Send optional auth or initial Hello
 	if secret != "" {
@@ -151,6 +154,7 @@ func (bm *BoreManager) Start(serverHost string, localPort int, secret string) (m
 		LocalPort:  localPort,
 		RemotePort: remotePort,
 		Address:    net.JoinHostPort(displayHost, strconv.Itoa(remotePort)),
+		LatencyMs:  latencyMs,
 	}
 	st := bm.state
 	bm.mu.Unlock()
@@ -232,6 +236,7 @@ func handleBoreForward(dialAddr string, localPort int, secret, connID string) {
 	if err != nil {
 		return
 	}
+	tuneTCPConn(remoteConn)
 
 	if secret != "" {
 		frame, err := readNullFrameRaw(remoteConn, 5*time.Second)
@@ -260,6 +265,7 @@ func handleBoreForward(dialAddr string, localPort int, secret, connID string) {
 		remoteConn.Close()
 		return
 	}
+	tuneTCPConn(localConn)
 
 	pipeBidirectional(localConn, remoteConn)
 }
@@ -310,12 +316,35 @@ func readNullFrameRaw(conn net.Conn, timeout time.Duration) ([]byte, error) {
 	return nil, fmt.Errorf("bore frame too long")
 }
 
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	},
+}
+
+func tuneTCPConn(conn net.Conn) {
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
+	}
+	_ = tc.SetNoDelay(true)
+	_ = tc.SetKeepAlive(true)
+	_ = tc.SetKeepAlivePeriod(15 * time.Second)
+	_ = tc.SetReadBuffer(256 * 1024)
+	_ = tc.SetWriteBuffer(256 * 1024)
+}
+
 func pipeBidirectional(a, b net.Conn) {
+	tuneTCPConn(a)
+	tuneTCPConn(b)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	copySide := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = io.Copy(dst, src)
+		bufPtr := copyBufPool.Get().(*[]byte)
+		_, _ = io.CopyBuffer(dst, src, *bufPtr)
+		copyBufPool.Put(bufPtr)
 		if tc, ok := dst.(*net.TCPConn); ok {
 			_ = tc.CloseWrite()
 		} else {
