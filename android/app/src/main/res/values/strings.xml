@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MC SekaiLink</string>
+    <string name="service_notification_title">MC SekaiLink Aktif</string>
+    <string name="service_notification_text">Yerel sunucu cekirdegi arka planda calisiyor</string>
+</resources>

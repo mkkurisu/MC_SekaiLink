@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "MC-SekaiLink",
+  "outputfilename": "MC-SekaiLink",
+  "frontend:dir": "frontend",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "MC SekaiLink Contributors",
+    "email": "noreply@github.com"
+  },
+  "info": {
+    "companyName": "MC SekaiLink",
+    "productName": "MC SekaiLink",
+    "productVersion": "0.1.0",
+    "copyright": "Copyright (c) 2026 MC SekaiLink Contributors (GPL-3.0)",
+    "comments": "Cross-platform Minecraft Java & Bedrock local server manager with Cross-Play, Mods, Shaders & Tunnels."
+  }
+}
