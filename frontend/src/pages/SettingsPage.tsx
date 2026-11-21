@@ -1,31 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { Cpu, Download, Loader2, Save, Settings, Trash2, Zap } from 'lucide-react';
 import { apiFetch, getAndroidBridge } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { JVMPreset, ServerInstance, SystemOverview } from '../types';
 
 interface Props {
   server: ServerInstance | null;
   system: SystemOverview | null;
+  lang: Lang;
   onRefresh: () => void;
   onDeleted: () => void;
 }
 
-const PROPERTY_FIELDS = [
-  { key: 'motd', label: 'Sunucu Aciklamasi (MOTD)', type: 'text' },
-  { key: 'gamemode', label: 'Oyun Modu', type: 'select', options: ['survival', 'creative', 'adventure', 'spectator'] },
-  { key: 'difficulty', label: 'Zorluk', type: 'select', options: ['peaceful', 'easy', 'normal', 'hard'] },
-  { key: 'max-players', label: 'Maksimum Oyuncu', type: 'number' },
-  { key: 'pvp', label: 'PvP Acik', type: 'bool' },
-  { key: 'online-mode', label: 'Premium Dogrulama (online-mode)', type: 'bool' },
-  { key: 'white-list', label: 'Whitelist', type: 'bool' },
-  { key: 'allow-flight', label: 'Ucus Izni (allow-flight)', type: 'bool' },
-  { key: 'view-distance', label: 'Gorus Mesafesi (Chunks)', type: 'number' },
-  { key: 'simulation-distance', label: 'Simulasyon Mesafesi', type: 'number' },
-  { key: 'level-seed', label: 'Dunya Tohumu (Seed)', type: 'text' },
-  { key: 'enable-command-block', label: 'Komut Bloklari', type: 'bool' },
-];
-
-export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDeleted }) => {
+export const SettingsPage: React.FC<Props> = ({ server, system, lang, onRefresh, onDeleted }) => {
+  const t = translations[lang].settings;
   const [name, setName] = useState('');
   const [memoryMB, setMemoryMB] = useState(2048);
   const [jvmPreset, setJvmPreset] = useState<JVMPreset>('aikar');
@@ -38,6 +26,21 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
   const [optimizing, setOptimizing] = useState(false);
   const [installingJava, setInstallingJava] = useState(false);
   const [msg, setMsg] = useState('');
+
+  const PROPERTY_FIELDS = [
+    { key: 'motd', label: t.propLabels.motd, type: 'text' },
+    { key: 'gamemode', label: t.propLabels.gamemode, type: 'select', options: ['survival', 'creative', 'adventure', 'spectator'] },
+    { key: 'difficulty', label: t.propLabels.difficulty, type: 'select', options: ['peaceful', 'easy', 'normal', 'hard'] },
+    { key: 'max-players', label: t.propLabels.maxPlayers, type: 'number' },
+    { key: 'pvp', label: t.propLabels.pvp, type: 'bool' },
+    { key: 'online-mode', label: t.propLabels.onlineMode, type: 'bool' },
+    { key: 'white-list', label: t.propLabels.whiteList, type: 'bool' },
+    { key: 'allow-flight', label: t.propLabels.allowFlight, type: 'bool' },
+    { key: 'view-distance', label: t.propLabels.viewDistance, type: 'number' },
+    { key: 'simulation-distance', label: t.propLabels.simulationDistance, type: 'number' },
+    { key: 'level-seed', label: t.propLabels.levelSeed, type: 'text' },
+    { key: 'enable-command-block', label: t.propLabels.enableCommandBlock, type: 'bool' },
+  ];
 
   useEffect(() => {
     if (!server) return;
@@ -70,10 +73,13 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
           nextProps['enforce-secure-profile'] = offlineMode ? 'false' : 'true';
         }
       }
-      await apiFetch(`/api/servers/${server.id}/properties`, {
-        method: 'PUT',
-        body: JSON.stringify(nextProps),
-      });
+      const res = await apiFetch<{ properties: Record<string, string>; liveApplied: string[] }>(
+        `/api/servers/${server.id}/properties?withMeta=true`,
+        {
+          method: 'PUT',
+          body: JSON.stringify(nextProps),
+        },
+      );
       await apiFetch(`/api/servers/${server.id}`, {
         method: 'PUT',
         body: JSON.stringify({
@@ -87,11 +93,23 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
           crossPlay: { ...server.crossPlay, bedrockPort },
         }),
       });
-      setProps(nextProps);
-      setMsg('Ayarlar kaydedildi. Port/RAM ve Offline Mode degisiklikleri sonraki baslatmada uygulanir.');
+      setProps(res?.properties || nextProps);
+      const liveList = res?.liveApplied || [];
+      if (liveList.length > 0) {
+        const keyMap: Record<string, string> = {
+          gamemode: t.propLabels.gamemode,
+          difficulty: t.propLabels.difficulty,
+          'white-list': t.propLabels.whiteList,
+          pvp: t.propLabels.pvp,
+        };
+        const names = liveList.map((k) => keyMap[k] || k).join(', ');
+        setMsg(`${t.savedLivePrefix} ${names}. ${t.savedRestartRest}`);
+      } else {
+        setMsg(t.savedDefault);
+      }
       onRefresh();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Kaydetme hatasi');
+      setMsg(e instanceof Error ? e.message : t.saveErr);
     } finally {
       setSaving(false);
     }
@@ -106,10 +124,10 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
         method: 'POST',
       });
       setProps(updated);
-      setMsg('Dusuk lag ayarlari uygulandi (view-distance=8, simulation-distance=6, sync-chunk-writes=false). Etkinlesmesi icin sunucuyu yeniden baslatin.');
+      setMsg(t.lagSuccess);
       onRefresh();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Lag optimizasyonu basarisiz');
+      setMsg(e instanceof Error ? e.message : t.lagFail);
     } finally {
       setOptimizing(false);
     }
@@ -119,17 +137,17 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
     const bridge = getAndroidBridge();
     if (bridge) {
       bridge.installArm64Jre();
-      setMsg('Android ARM64 Java kurulumu baslatildi...');
+      setMsg(t.androidJavaStarted);
       return;
     }
     setInstallingJava(true);
     setMsg('');
     try {
       await apiFetch('/api/system/install-java', { method: 'POST' });
-      setMsg('Eclipse Temurin Java 25 JRE basariyla kuruldu!');
+      setMsg(t.javaInstallSuccess);
       onRefresh();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Java kurulumu basarisiz');
+      setMsg(e instanceof Error ? e.message : t.javaInstallFail);
     } finally {
       setInstallingJava(false);
     }
@@ -137,13 +155,13 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
 
   const handleDelete = async () => {
     if (!server) return;
-    if (!window.confirm(`"${server.name}" sunucusu ve tum dosyalari silinsin mi?`)) return;
+    if (!window.confirm(`${t.deleteConfirmPrefix}${server.name}${t.deleteConfirmSuffix}`)) return;
     await apiFetch(`/api/servers/${server.id}`, { method: 'DELETE' });
     onDeleted();
   };
 
   if (!server) {
-    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">Once bir sunucu secin.</div>;
+    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">{t.selectServerFirst}</div>;
   }
 
   return (
@@ -158,11 +176,11 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
           <div className="flex items-center gap-2.5">
             <Cpu className="h-5 w-5 text-emerald-400" />
             <div>
-              <h2 className="text-lg font-bold text-white">Performans &amp; Java Calisma Ortami</h2>
+              <h2 className="text-lg font-bold text-white">{t.runtimeTitle}</h2>
               <p className="text-xs text-slate-400">
-                Java Durumu:{' '}
+                {t.javaStatusLabel}{' '}
                 <strong className={system?.javaDetected ? 'text-emerald-300' : 'text-amber-300'}>
-                  {system?.javaDetected ? `Hazir (${system.javaVersion})` : 'Bulunamadi'}
+                  {system?.javaDetected ? `${t.javaReadyPrefix} (${system.javaVersion})` : t.javaNotFound}
                 </strong>
               </p>
             </div>
@@ -175,14 +193,14 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               className="flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/25"
             >
               {installingJava ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              Otomatik Java 25 Kur
+              {t.installJavaBtn}
             </button>
             {getAndroidBridge()?.importArm64JreFile && (
               <button
                 onClick={() => getAndroidBridge()?.importArm64JreFile?.()}
                 className="flex items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/15 px-3.5 py-2 text-xs font-semibold text-violet-300 hover:bg-violet-500/25"
               >
-                Telefondan JRE Sec (.tar.xz/.zip)
+                {t.importAndroidJreBtn}
               </button>
             )}
             <button
@@ -191,14 +209,14 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2 text-xs font-semibold text-slate-950 hover:brightness-110"
             >
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              Kaydet
+              {t.saveBtn}
             </button>
           </div>
         </div>
 
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Sunucu Adi</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.serverName}</label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -206,7 +224,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">RAM ({memoryMB} MB)</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.ramLabel} ({memoryMB} MB)</label>
             <input
               type="range"
               min={512}
@@ -218,19 +236,19 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">JVM GC Profili</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.jvmProfile}</label>
             <select
               value={jvmPreset}
               onChange={(e) => setJvmPreset(e.target.value as JVMPreset)}
               className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-white outline-none"
             >
-              <option value="aikar">Aikar&apos;s Flags (Onerilen)</option>
-              <option value="zgc">Generational ZGC</option>
-              <option value="standard">Standard</option>
+              <option value="aikar">{t.jvmAikar}</option>
+              <option value="zgc">{t.jvmZgc}</option>
+              <option value="standard">{t.jvmStandard}</option>
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Java Port (TCP)</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.javaPort}</label>
             <input
               type="number"
               value={javaPort}
@@ -239,7 +257,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Bedrock Port (UDP)</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.bedrockPort}</label>
             <input
               type="number"
               value={bedrockPort}
@@ -254,7 +272,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               onChange={(e) => setAutoRestart(e.target.checked)}
               className="h-4 w-4 accent-emerald-500"
             />
-            Cokme durumunda otomatik yeniden baslat
+            {t.autoRestartLabel}
           </label>
         </div>
 
@@ -277,16 +295,12 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               className="mt-0.5 h-4 w-4 accent-amber-400"
             />
             <div>
-              <div className="font-semibold text-white">Cevrimdisi / Premium Olmayan Giris (Offline Mode)</div>
-              <p className="mt-0.5 text-xs text-slate-400">
-                Crackli veya Mojang/Microsoft hesabi dogrulanmamis Java &amp; Bedrock oyuncularinin girmesine izin verir (online-mode, enforce-secure-profile ve Geyser ayarlari otomatik senkronlanir).
-              </p>
+              <div className="font-semibold text-white">{t.offlineTitle}</div>
+              <p className="mt-0.5 text-xs text-slate-400">{t.offlineDesc}</p>
             </div>
           </label>
           {offlineMode && (
-            <p className="pl-7 text-[11px] text-amber-300/90">
-              Guvenlik ipucu: Herkese acik tunel kullanirken isim taklidini onlemek icin Whitelist veya Modrinth&apos;ten AuthMe / LoginSecurity kurmaniz onerilir.
-            </p>
+            <p className="pl-7 text-[11px] text-amber-300/90">{t.offlineTip}</p>
           )}
         </div>
       </div>
@@ -301,12 +315,12 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-bold text-white">
                   <Zap className={`h-4 w-4 ${highViewDist ? 'text-amber-400' : 'text-emerald-400'}`} />
-                  Lag Optimizasyonu &amp; Tunel Ag Verimliligi
+                  {t.lagTitle}
                 </h3>
                 <p className="mt-1 text-xs text-slate-300">
                   {highViewDist
-                    ? `Dikkat: Mevcut view-distance=${viewDist} cok yuksek! Yuksek chunk gorus mesafesi ev interneti ve tunellerde paket birikmesine (blok kirma / hasar lagina) yol acar.`
-                    : 'Chunk mesafesini ve disk yazimini tuneller + ayni PC barindirma icin en akici seviyeye getirir (view-distance=8, simulation-distance=6, sync-chunk-writes=false).'}
+                    ? `${t.lagHighWarnPrefix}${viewDist}${t.lagHighWarnSuffix}`
+                    : t.lagDefaultDesc}
                 </p>
               </div>
               <button
@@ -315,7 +329,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
                 className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:brightness-110 disabled:opacity-50"
               >
                 {optimizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}
-                Tek Tikla Dusuk Lag Optimizasyonu Uygula
+                {t.lagBtn}
               </button>
             </div>
           </div>
@@ -326,7 +340,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
       <div className="glass-card rounded-2xl p-6">
         <h3 className="mb-4 flex items-center gap-2 text-base font-bold text-white">
           <Settings className="h-4 w-4 text-cyan-400" />
-          Gorsel server.properties Duzenleyici
+          {t.propsTitle}
         </h3>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {PROPERTY_FIELDS.map((f) => {
@@ -345,7 +359,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
                     }}
                     className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${val === 'true' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}
                   >
-                    {val === 'true' ? 'Acik (true)' : 'Kapali (false)'}
+                    {val === 'true' ? t.boolOn : t.boolOff}
                   </button>
                 ) : f.type === 'select' ? (
                   <select
@@ -376,15 +390,15 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
       {/* Danger Zone */}
       <div className="flex items-center justify-between rounded-2xl border border-rose-500/25 bg-rose-500/5 p-5">
         <div>
-          <h4 className="text-sm font-semibold text-rose-300">Sunucuyu Kalici Olarak Sil</h4>
-          <p className="text-xs text-slate-400">Bu islem sunucuya ait dunyalari, modlari ve yedekleri kaldirir.</p>
+          <h4 className="text-sm font-semibold text-rose-300">{t.dangerTitle}</h4>
+          <p className="text-xs text-slate-400">{t.dangerDesc}</p>
         </div>
         <button
           onClick={handleDelete}
           className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-4 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          Sunucuyu Sil
+          {t.deleteBtn}
         </button>
       </div>
     </div>

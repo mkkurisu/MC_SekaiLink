@@ -33,6 +33,19 @@ func InitDNSResolver() {
 	}
 	if len(servers) == 0 {
 		servers = []string{"1.1.1.1:53", "8.8.8.8:53"}
+	} else {
+		for _, fallback := range []string{"1.1.1.1:53", "8.8.8.8:53"} {
+			dup := false
+			for _, existing := range servers {
+				if existing == fallback {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				servers = append(servers, fallback)
+			}
+		}
 	}
 
 	net.DefaultResolver = &net.Resolver{

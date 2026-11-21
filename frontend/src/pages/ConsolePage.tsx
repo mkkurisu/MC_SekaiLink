@@ -1,17 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, Download, Search, Send, Terminal, Trash2 } from 'lucide-react';
 import { buildWsUrl } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { ConsoleLine, ServerInstance } from '../types';
 
 interface Props {
   server: ServerInstance | null;
+  lang: Lang;
 }
 
-const QUICK_COMMANDS = ['list', 'tps', 'save-all', 'say Sunucu acik!', 'time set day', 'weather clear'];
-
-export const ConsolePage: React.FC<Props> = ({ server }) => {
+export const ConsolePage: React.FC<Props> = ({ server, lang }) => {
+  const t = translations[lang].console;
   const [lines, setLines] = useState<ConsoleLine[]>([]);
   const [input, setInput] = useState('');
+  const [targetPlayer, setTargetPlayer] = useState('@a');
   const [filter, setFilter] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [connected, setConnected] = useState(false);
@@ -42,7 +44,7 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
         } else if (msg.type === 'install_progress' && typeof msg.data === 'string') {
           setLines((prev) => [
             ...prev.slice(-999),
-            { timestamp: new Date().toISOString(), level: 'INFO', text: `[Kurulum] ${msg.data}` },
+            { timestamp: new Date().toISOString(), level: 'INFO', text: `${t.installPrefix} ${msg.data}` },
           ]);
         }
       } catch {
@@ -104,8 +106,30 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
   };
 
   if (!server) {
-    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">Once bir sunucu secin veya olusturun.</div>;
+    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">{t.selectServerFirst}</div>;
   }
+
+  const target = targetPlayer.trim() || '@a';
+  const gamemodeChips = [
+    { label: t.gmCreative, cmd: `gamemode creative ${target}` },
+    { label: t.gmSurvival, cmd: `gamemode survival ${target}` },
+    { label: t.gmAdventure, cmd: `gamemode adventure ${target}` },
+    { label: t.gmSpectator, cmd: `gamemode spectator ${target}` },
+  ];
+  const worldChips = [
+    { label: t.cmdDay, cmd: 'time set day' },
+    { label: t.cmdClearWeather, cmd: 'weather clear' },
+    { label: t.cmdPeaceful, cmd: 'difficulty peaceful' },
+    { label: t.cmdNormal, cmd: 'difficulty normal' },
+    { label: t.cmdHard, cmd: 'difficulty hard' },
+    { label: t.cmdKeepInvOn, cmd: 'gamerule keepInventory true' },
+    { label: t.cmdKeepInvOff, cmd: 'gamerule keepInventory false' },
+  ];
+  const serverChips = [
+    { label: t.cmdPlayers, cmd: 'list' },
+    { label: t.cmdTps, cmd: 'tps' },
+    { label: t.cmdSaveAll, cmd: 'save-all' },
+  ];
 
   const visibleLines = filter.trim()
     ? lines.filter((l) => l.text.toLowerCase().includes(filter.toLowerCase()))
@@ -116,9 +140,9 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-3.5">
         <div className="flex items-center gap-2.5">
           <Terminal className="h-5 w-5 text-emerald-400" />
-          <h2 className="font-semibold text-white">Canli Konsol — {server.name}</h2>
+          <h2 className="font-semibold text-white">{t.titlePrefix} {server.name}</h2>
           <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${connected ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}>
-            {connected ? 'WS BAGLI' : 'BAGLANTI YOK'}
+            {connected ? t.wsConnected : t.wsDisconnected}
           </span>
         </div>
 
@@ -128,43 +152,82 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Log filtrele..."
+              placeholder={t.filterPlaceholder}
               className="w-40 rounded-xl border border-white/10 bg-slate-950/70 py-1.5 pl-8 pr-3 text-xs text-white outline-none focus:border-emerald-500"
             />
           </div>
           <button
             onClick={() => setAutoScroll(!autoScroll)}
             className={`rounded-xl border px-2.5 py-1.5 text-xs ${autoScroll ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300' : 'border-white/10 text-slate-400'}`}
-            title="Otomatik kaydir"
+            title={t.autoScrollTitle}
           >
             <ArrowDown className="h-3.5 w-3.5" />
           </button>
-          <button onClick={downloadLog} className="rounded-xl border border-white/10 p-1.5 text-slate-400 hover:text-white" title="Log Indir">
+          <button onClick={downloadLog} className="rounded-xl border border-white/10 p-1.5 text-slate-400 hover:text-white" title={t.downloadLogTitle}>
             <Download className="h-3.5 w-3.5" />
           </button>
-          <button onClick={() => setLines([])} className="rounded-xl border border-white/10 p-1.5 text-slate-400 hover:text-rose-300" title="Temizle">
+          <button onClick={() => setLines([])} className="rounded-xl border border-white/10 p-1.5 text-slate-400 hover:text-rose-300" title={t.clearTitle}>
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Quick command chips */}
-      <div className="flex flex-wrap gap-1.5 border-b border-white/5 bg-slate-950/40 px-5 py-2">
-        {QUICK_COMMANDS.map((cmd) => (
-          <button
-            key={cmd}
-            onClick={() => sendCmd(cmd)}
-            className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 font-mono text-[11px] text-slate-300 hover:border-emerald-500/40 hover:text-emerald-300"
-          >
-            /{cmd}
-          </button>
-        ))}
+      {/* Organized Quick Actions */}
+      <div className="space-y-1.5 border-b border-white/5 bg-slate-950/40 px-5 py-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-400">{t.groupGamemode}</span>
+          <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-slate-900/80 px-2 py-0.5">
+            <span className="text-[10px] text-slate-400">{t.targetLabel}</span>
+            <input
+              value={targetPlayer}
+              onChange={(e) => setTargetPlayer(e.target.value)}
+              placeholder={t.targetPlaceholder}
+              className="w-20 bg-transparent font-mono text-[11px] text-cyan-300 outline-none"
+            />
+          </div>
+          {gamemodeChips.map((item) => (
+            <button
+              key={item.cmd}
+              onClick={() => sendCmd(item.cmd)}
+              title={`/${item.cmd}`}
+              className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/20"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-400">{t.groupWorld}</span>
+          {worldChips.map((item) => (
+            <button
+              key={item.cmd}
+              onClick={() => sendCmd(item.cmd)}
+              title={`/${item.cmd}`}
+              className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:border-cyan-500/40 hover:text-cyan-200"
+            >
+              {item.label}
+            </button>
+          ))}
+          <span className="mx-1 h-3.5 w-px bg-white/10" />
+          <span className="mr-1 text-[10px] font-semibold uppercase tracking-wider text-violet-400">{t.groupServer}</span>
+          {serverChips.map((item) => (
+            <button
+              key={item.cmd}
+              onClick={() => sendCmd(item.cmd)}
+              title={`/${item.cmd}`}
+              className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-slate-300 hover:border-violet-400/50 hover:text-violet-200"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Terminal Output */}
       <div className="flex-1 overflow-y-auto bg-[#050811] p-4 font-mono text-xs leading-relaxed">
         {visibleLines.length === 0 ? (
-          <div className="py-12 text-center text-slate-600">Sunucu ciktisi burada canli akacak...</div>
+          <div className="py-12 text-center text-slate-600">{t.empty}</div>
         ) : (
           visibleLines.map((l, i) => {
             const color =
@@ -193,7 +256,7 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Sunucu komutu yazin (orn: op KullaniciAdi, say Merhaba)..."
+          placeholder={t.inputPlaceholder}
           className="flex-1 bg-transparent font-mono text-sm text-white outline-none placeholder:text-slate-600"
         />
         <button
@@ -201,7 +264,7 @@ export const ConsolePage: React.FC<Props> = ({ server }) => {
           className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:brightness-110"
         >
           <Send className="h-3.5 w-3.5" />
-          Gonder
+          {t.send}
         </button>
       </div>
     </div>

@@ -106,6 +106,7 @@ export interface AndroidBridge {
   isJreInstalled(): boolean;
   installArm64Jre(): void;
   importArm64JreFile?: () => void;
+  copyToClipboard?: (text: string) => boolean;
   stopLocalService(): void;
   requestBatteryUnrestricted(): void;
 }
@@ -113,4 +114,41 @@ export interface AndroidBridge {
 export function getAndroidBridge(): AndroidBridge | null {
   const w = window as unknown as { SekaiAndroid?: AndroidBridge };
   return w.SekaiAndroid || null;
+}
+
+export async function copyTextSafe(text: string): Promise<boolean> {
+  const bridge = getAndroidBridge();
+  if (bridge?.copyToClipboard) {
+    try {
+      if (bridge.copyToClipboard(text)) {
+        return true;
+      }
+    } catch {
+      // fall through to browser clipboard
+    }
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to execCommand fallback
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Activity,
   Copy,
   Check,
   Cpu,
@@ -19,7 +18,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
-import { apiFetch, formatUptime } from '../lib/api';
+import { apiFetch, copyTextSafe, formatUptime } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
 import { BoreState, E4mcState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
@@ -56,6 +55,7 @@ export const DashboardPage: React.FC<Props> = ({
   onNavigate,
 }) => {
   const t = translations[lang];
+  const td = t.dashboard;
   const [metrics, setMetrics] = useState<ServerMetrics | null>(null);
   const [history, setHistory] = useState<MetricPoint[]>([]);
   const [busy, setBusy] = useState(false);
@@ -97,7 +97,7 @@ export const DashboardPage: React.FC<Props> = ({
   }, [server?.id]);
 
   const copyAddr = async (key: string, val: string) => {
-    await navigator.clipboard.writeText(val);
+    await copyTextSafe(val);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(''), 1800);
   };
@@ -110,7 +110,7 @@ export const DashboardPage: React.FC<Props> = ({
       await apiFetch(`/api/servers/${server.id}/${action}`, { method: 'POST' });
       onRefresh();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Islem basarisiz');
+      setError(e instanceof Error ? e.message : td.actionFailed);
     } finally {
       setBusy(false);
     }
@@ -130,8 +130,8 @@ export const DashboardPage: React.FC<Props> = ({
         <div className="mb-4 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 p-5 text-emerald-400">
           <Server className="h-12 w-12" />
         </div>
-        <h2 className="text-2xl font-bold text-white">{t.dashboard.noServerTitle}</h2>
-        <p className="mt-2 max-w-md text-sm text-slate-400">{t.dashboard.noServerDesc}</p>
+        <h2 className="text-2xl font-bold text-white">{td.noServerTitle}</h2>
+        <p className="mt-2 max-w-md text-sm text-slate-400">{td.noServerDesc}</p>
         <button
           onClick={onOpenCreate}
           className="mt-6 flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 font-semibold text-slate-950 shadow-lg shadow-emerald-500/25 hover:brightness-110"
@@ -152,7 +152,6 @@ export const DashboardPage: React.FC<Props> = ({
   const bedrockLocal = `${localIP}:${server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort}`;
   const showJava = server.engine !== 'bds' && server.engine !== 'powernukkitx';
   const showBedrock = server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx';
-  const isPureJava = showJava && !server.crossPlay?.enabled;
 
   const e4mcActive = Boolean(e4mc?.running && e4mc.domain);
   const playitJavaActive = Boolean(tunnel?.running && tunnel.javaAddress);
@@ -166,25 +165,25 @@ export const DashboardPage: React.FC<Props> = ({
     (boreActive && bore!.address) ||
     '';
 
-  let publicJavaLabel: string = t.dashboard.publicTunnel;
+  let publicJavaLabel: string = td.publicTunnel;
   if (e4mcActive) {
     const pingText = e4mc!.latencyMs > 0 ? ` • ${e4mc!.latencyMs} ms` : '';
-    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (e4mc • ${e4mc!.region || 'EU'}${pingText})`;
+    publicJavaLabel = `${td.friendsLabelPrefix} (e4mc • ${e4mc!.region || 'EU'}${pingText})`;
   } else if (playitJavaActive) {
-    publicJavaLabel = 'Uzaktaki Arkadaslarin Icin (playit.gg)';
+    publicJavaLabel = `${td.friendsLabelPrefix} (playit.gg)`;
   } else if (relayJavaActive) {
     const pingText = relay!.latencyMs ? ` • ${relay!.latencyMs} ms` : '';
-    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (SekaiLink Relay${pingText})`;
+    publicJavaLabel = `${td.friendsLabelPrefix} (SekaiLink Relay${pingText})`;
   } else if (boreActive) {
     const pingText = bore!.latencyMs ? ` • ${bore!.latencyMs} ms` : '';
-    publicJavaLabel = `Uzaktaki Arkadaslarin Icin (bore.pub${pingText})`;
+    publicJavaLabel = `${td.friendsLabelPrefix} (bore.pub${pingText})`;
   }
 
   const publicBedrock =
     (tunnel?.running && tunnel.bedrockAddress) ||
     (relay?.running && relay.bedrockAddress) ||
     '';
-  const publicBedrockLabel = tunnel?.running && tunnel.bedrockAddress ? t.dashboard.publicTunnel : 'Dis Baglanti (SekaiLink Relay)';
+  const publicBedrockLabel: string = tunnel?.running && tunnel.bedrockAddress ? td.publicTunnel : td.friendsRelayLabel;
 
   const startQuickE4mc = async () => {
     setQuickOpeningTunnel(true);
@@ -196,8 +195,8 @@ export const DashboardPage: React.FC<Props> = ({
       });
       onRefresh();
     } catch (e: unknown) {
-      const reason = e instanceof Error ? e.message : 'e4mc QUIC tuneli acilamadi';
-      setError(`${reason} — UDP/QUIC engelli ise "Dis Baglanti & Ag" sekmesinden bore.pub veya playit.gg deneyebilirsiniz.`);
+      const reason = e instanceof Error ? e.message : td.actionFailed;
+      setError(`${reason} ${td.quickE4mcErrSuffix}`);
     } finally {
       setQuickOpeningTunnel(false);
     }
@@ -233,7 +232,7 @@ export const DashboardPage: React.FC<Props> = ({
               </span>
               {server.crossPlay?.enabled && (
                 <span className="rounded-full border border-cyan-500/30 bg-cyan-500/15 px-3 py-1 text-xs font-medium text-cyan-300">
-                  Cross-Play (Java + Bedrock)
+                  {td.crossplayBadge}
                 </span>
               )}
               <span
@@ -243,15 +242,15 @@ export const DashboardPage: React.FC<Props> = ({
                     : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                 }`}
               >
-                {server.offlineMode ? 'Offline Mod (Crackli Acik)' : 'Premium Mod'}
+                {server.offlineMode ? td.offlineBadge : td.premiumBadge}
               </span>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-400">
-              <span>Motor: <strong className="text-slate-200 uppercase">{server.engine}</strong></span>
-              <span>Surum: <strong className="text-slate-200">{server.mcVersion}</strong></span>
-              <span>Dunya: <strong className="text-slate-200">{server.activeWorld}</strong></span>
+              <span>{td.engineLabel} <strong className="text-slate-200 uppercase">{server.engine}</strong></span>
+              <span>{td.versionLabel} <strong className="text-slate-200">{server.mcVersion}</strong></span>
+              <span>{td.worldLabel} <strong className="text-slate-200">{server.activeWorld}</strong></span>
               {isOnline && metrics && (
-                <span>Calisma Suresi: <strong className="text-emerald-300">{formatUptime(metrics.uptimeSec)}</strong></span>
+                <span>{td.uptimeLabel} <strong className="text-emerald-300">{formatUptime(metrics.uptimeSec)}</strong></span>
               )}
             </div>
           </div>
@@ -297,7 +296,7 @@ export const DashboardPage: React.FC<Props> = ({
 
         {server.lastError && (
           <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs text-rose-300">
-            Son Hata: {server.lastError}
+            {td.lastErrorLabel} {server.lastError}
           </div>
         )}
       </div>
@@ -309,25 +308,25 @@ export const DashboardPage: React.FC<Props> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-semibold text-emerald-300">
                 <Wifi className="h-4 w-4" />
-                {t.dashboard.javaAddr}
+                {td.javaAddr}
               </div>
               <span className="rounded-lg bg-emerald-500/15 px-2 py-0.5 font-mono text-xs text-emerald-300">TCP {server.javaPort}</span>
             </div>
             <div className="mt-3 space-y-2">
               <AddressRow
-                label="Senin Girisin (Bu PC — 0 ms Lag)"
+                label={td.hostLocalLabel}
                 value={javaHostLocal}
-                badge="0 ms"
+                badge={td.hostLocalBadge}
                 copied={copiedKey === 'jhost'}
                 onCopy={() => copyAddr('jhost', javaHostLocal)}
-                onQr={() => setQrValue({ title: 'Bu Bilgisayar (0 ms)', value: javaHostLocal })}
+                onQr={() => setQrValue({ title: td.qrTitleHost, value: javaHostLocal })}
               />
               <AddressRow
-                label="Ayni Wi-Fi / LAN (1 ms)"
+                label={td.lanAddrLabel}
                 value={javaLocal}
                 copied={copiedKey === 'jlan'}
                 onCopy={() => copyAddr('jlan', javaLocal)}
-                onQr={() => setQrValue({ title: 'Java LAN Adresi', value: javaLocal })}
+                onQr={() => setQrValue({ title: td.qrTitleJavaLan, value: javaLocal })}
               />
               {publicJava ? (
                 <>
@@ -337,28 +336,20 @@ export const DashboardPage: React.FC<Props> = ({
                     highlight
                     copied={copiedKey === 'jpub'}
                     onCopy={() => copyAddr('jpub', publicJava)}
-                    onQr={() => setQrValue({ title: 'Java Dis Baglanti', value: publicJava })}
+                    onQr={() => setQrValue({ title: td.qrTitleJavaPub, value: publicJava })}
                   />
                   <p className="px-1 text-[11px] text-cyan-200/80">
-                    Bu bilgisayardan oynarken daima <code className="font-mono text-emerald-300">{javaHostLocal}</code> kullan (0 ms lag). Dis adresi yalnizca uzaktaki arkadaslarina ver.
+                    {td.hostTip1} <code className="font-mono text-emerald-300">{javaHostLocal}</code> {td.hostTip2}
                   </p>
                 </>
-              ) : isPureJava ? (
+              ) : (
                 <button
                   disabled={quickOpeningTunnel}
                   onClick={startQuickE4mc}
                   className="flex w-full items-center justify-between rounded-xl border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50"
                 >
-                  <span>{quickOpeningTunnel ? 'e4mc (Avrupa) tuneli aciliyor...' : 'Tek Tikla Disa Ac (e4mc — Avrupa / Dusuk Ping, Hesapsiz)'}</span>
+                  <span>{quickOpeningTunnel ? td.quickE4mcOpening : td.quickE4mcBtn}</span>
                   <Zap className="h-3.5 w-3.5 shrink-0" />
-                </button>
-              ) : (
-                <button
-                  onClick={() => onNavigate('network')}
-                  className="flex w-full items-center justify-between rounded-xl border border-dashed border-white/15 px-3 py-2 text-xs text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300"
-                >
-                  <span>{t.dashboard.tunnelNotActive}</span>
-                  <Globe className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
@@ -370,7 +361,7 @@ export const DashboardPage: React.FC<Props> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-sm font-semibold text-cyan-300">
                 <Globe className="h-4 w-4" />
-                {t.dashboard.bedrockAddr}
+                {td.bedrockAddr}
               </div>
               <span className="rounded-lg bg-cyan-500/15 px-2 py-0.5 font-mono text-xs text-cyan-300">
                 UDP {server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort}
@@ -378,11 +369,11 @@ export const DashboardPage: React.FC<Props> = ({
             </div>
             <div className="mt-3 space-y-2">
               <AddressRow
-                label={t.dashboard.localLan}
+                label={td.localLan}
                 value={bedrockLocal}
                 copied={copiedKey === 'blan'}
                 onCopy={() => copyAddr('blan', bedrockLocal)}
-                onQr={() => setQrValue({ title: 'Bedrock LAN Adresi', value: bedrockLocal })}
+                onQr={() => setQrValue({ title: td.qrTitleBedrockLan, value: bedrockLocal })}
               />
               {publicBedrock ? (
                 <AddressRow
@@ -391,15 +382,15 @@ export const DashboardPage: React.FC<Props> = ({
                   highlight
                   copied={copiedKey === 'bpub'}
                   onCopy={() => copyAddr('bpub', publicBedrock)}
-                  onQr={() => setQrValue({ title: 'Bedrock Dis Baglanti', value: publicBedrock })}
+                  onQr={() => setQrValue({ title: td.qrTitleBedrockPub, value: publicBedrock })}
                 />
               ) : (
                 <button
                   onClick={() => onNavigate('network')}
                   className="flex w-full items-center justify-between rounded-xl border border-dashed border-white/15 px-3 py-2 text-xs text-slate-400 hover:border-cyan-500/40 hover:text-cyan-300"
                 >
-                  <span>{t.dashboard.tunnelNotActive}</span>
-                  <Globe className="h-3.5 w-3.5" />
+                  <span>{td.tunnelNotActive}</span>
+                  <Globe className="h-3.5 w-3.5 shrink-0" />
                 </button>
               )}
             </div>
@@ -411,7 +402,7 @@ export const DashboardPage: React.FC<Props> = ({
       <div className="grid gap-4 md:grid-cols-3">
         <div className="glass-card rounded-2xl p-5">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span className="flex items-center gap-1.5"><Cpu className="h-4 w-4 text-emerald-400" /> {t.dashboard.cpuUsage}</span>
+            <span className="flex items-center gap-1.5"><Cpu className="h-4 w-4 text-emerald-400" /> {td.cpuUsage}</span>
             <span className="font-mono text-base font-bold text-white">{metrics ? `${metrics.cpuPercent.toFixed(1)}%` : '0%'}</span>
           </div>
           <div className="mt-3 h-20">
@@ -432,7 +423,7 @@ export const DashboardPage: React.FC<Props> = ({
 
         <div className="glass-card rounded-2xl p-5">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span className="flex items-center gap-1.5"><HardDrive className="h-4 w-4 text-cyan-400" /> {t.dashboard.ramUsage}</span>
+            <span className="flex items-center gap-1.5"><HardDrive className="h-4 w-4 text-cyan-400" /> {td.ramUsage}</span>
             <span className="font-mono text-base font-bold text-white">
               {metrics ? `${Math.round(metrics.memoryUsedMB)} / ${metrics.memoryMaxMB} MB` : `0 / ${server.memoryMB} MB`}
             </span>
@@ -455,22 +446,22 @@ export const DashboardPage: React.FC<Props> = ({
 
         <div className="glass-card flex flex-col justify-between rounded-2xl p-5">
           <div className="flex items-center justify-between text-xs text-slate-400">
-            <span className="flex items-center gap-1.5"><Zap className="h-4 w-4 text-violet-400" /> {t.dashboard.tpsTitle}</span>
+            <span className="flex items-center gap-1.5"><Zap className="h-4 w-4 text-violet-400" /> {td.tpsTitle}</span>
             <span className="font-mono text-base font-bold text-violet-300">{isOnline && metrics ? metrics.tps.toFixed(1) : '--'}</span>
           </div>
           <div className="my-3 space-y-2 text-xs text-slate-400">
             <div className="flex justify-between">
-              <span>{t.dashboard.playersTitle}</span>
+              <span>{td.playersTitle}</span>
               <span className="font-semibold text-white">{metrics?.playerCount ?? 0} / {metrics?.maxPlayers ?? 20}</span>
             </div>
             <div className="flex justify-between">
-              <span>{t.dashboard.sysHost}</span>
-              <span className="text-slate-200">{system ? `${system.os}/${system.arch} (${system.ramFreeMB} MB bos)` : '...'}</span>
+              <span>{td.sysHost}</span>
+              <span className="text-slate-200">{system ? `${system.os}/${system.arch} (${system.ramFreeMB} MB ${td.freeSuffix})` : '...'}</span>
             </div>
             <div className="flex justify-between">
               <span>Java</span>
               <span className={system?.javaDetected ? 'text-emerald-300' : 'text-amber-300'}>
-                {system?.javaDetected ? `v${system.javaVersion}` : 'Kurulu degil'}
+                {system?.javaDetected ? `${td.javaReadyPrefix}${system.javaVersion}` : td.javaNotInstalled}
               </span>
             </div>
           </div>
@@ -482,12 +473,12 @@ export const DashboardPage: React.FC<Props> = ({
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-semibold text-white">
             <Users className="h-4 w-4 text-emerald-400" />
-            {t.dashboard.playersTitle}
+            {td.playersTitle}
           </div>
-          <span className="text-xs text-slate-400">{metrics?.playerCount ?? 0} aktif</span>
+          <span className="text-xs text-slate-400">{metrics?.playerCount ?? 0} {td.activeSuffix}</span>
         </div>
         {!metrics?.players || metrics.players.length === 0 ? (
-          <p className="py-4 text-center text-xs text-slate-500">{t.dashboard.noPlayers}</p>
+          <p className="py-4 text-center text-xs text-slate-500">{td.noPlayers}</p>
         ) : (
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {metrics.players.map((p) => (
@@ -501,13 +492,13 @@ export const DashboardPage: React.FC<Props> = ({
                     onClick={() => quickPlayerCmd(`op ${p.name}`)}
                     className="rounded-lg bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-300 hover:bg-emerald-500/25"
                   >
-                    OP
+                    {td.opBtn}
                   </button>
                   <button
                     onClick={() => quickPlayerCmd(`kick ${p.name}`)}
                     className="rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-300 hover:bg-rose-500/25"
                   >
-                    Kick
+                    {td.kickBtn}
                   </button>
                 </div>
               </div>
@@ -520,8 +511,9 @@ export const DashboardPage: React.FC<Props> = ({
         open={Boolean(qrValue)}
         onClose={() => setQrValue(null)}
         title={qrValue?.title || ''}
-        subtitle="Arkadaslarinla paylas veya mobilden kopyala"
+        subtitle={td.qrShareSubtitle}
         value={qrValue?.value || ''}
+        lang={lang}
       />
     </div>
   );
@@ -547,7 +539,7 @@ const AddressRow: React.FC<{
       <div className="truncate font-mono text-xs text-white">{value}</div>
     </div>
     <div className="flex shrink-0 items-center gap-1">
-      <button onClick={onQr} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" title="QR Kod">
+      <button onClick={onQr} className="rounded-lg p-1.5 text-slate-400 hover:bg-white/10 hover:text-white" title="QR">
         <QrCode className="h-3.5 w-3.5" />
       </button>
       <button onClick={onCopy} className="flex items-center gap-1 rounded-lg bg-white/10 px-2.5 py-1 text-xs font-medium text-white hover:bg-white/20">

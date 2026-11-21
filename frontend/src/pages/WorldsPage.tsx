@@ -1,14 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Archive, Check, Download, Globe2, Loader2, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { apiFetch, formatBytes, getApiBaseUrl } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { BackupInfo, ServerInstance, WorldInfo } from '../types';
 
 interface Props {
   server: ServerInstance | null;
+  lang: Lang;
   onRefresh: () => void;
 }
 
-export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
+export const WorldsPage: React.FC<Props> = ({ server, lang, onRefresh }) => {
+  const t = translations[lang].worlds;
   const [worlds, setWorlds] = useState<WorldInfo[]>([]);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [busy, setBusy] = useState(false);
@@ -40,10 +43,10 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
         method: 'POST',
         body: fd,
       });
-      setMsg(`Dunya iceri aktarildi: ${res.name}`);
+      setMsg(`${t.importedMsg} ${res.name}`);
       await loadAll();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Iceri aktarma hatasi');
+      setMsg(e instanceof Error ? e.message : t.importErr);
     } finally {
       setBusy(false);
     }
@@ -55,7 +58,7 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
       method: 'POST',
       body: JSON.stringify({ name }),
     });
-    setMsg(`Aktif dunya "${name}" olarak degistirildi.`);
+    setMsg(`${t.switchedPrefix} "${name}" ${t.switchedSuffix}`);
     await loadAll();
     onRefresh();
   };
@@ -68,10 +71,10 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
         method: 'POST',
         body: JSON.stringify({ worldName: worldName || server.activeWorld }),
       });
-      setMsg(`Yedek alindi: ${b.filename}`);
+      setMsg(`${t.backupCreatedMsg} ${b.filename}`);
       await loadAll();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Yedekleme hatasi');
+      setMsg(e instanceof Error ? e.message : t.backupErr);
     } finally {
       setBusy(false);
     }
@@ -82,17 +85,17 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
     setBusy(true);
     try {
       await apiFetch(`/api/servers/${server.id}/backups/${encodeURIComponent(filename)}/restore`, { method: 'POST' });
-      setMsg(`Yedekten geri yuklendi: ${filename}`);
+      setMsg(`${t.restoredMsg} ${filename}`);
       await loadAll();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Geri yukleme hatasi');
+      setMsg(e instanceof Error ? e.message : t.restoreErr);
     } finally {
       setBusy(false);
     }
   };
 
   if (!server) {
-    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">Once bir sunucu secin.</div>;
+    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">{t.selectServerFirst}</div>;
   }
 
   return (
@@ -101,9 +104,9 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
         <div>
           <h2 className="flex items-center gap-2 text-lg font-bold text-white">
             <Globe2 className="h-5 w-5 text-emerald-400" />
-            Dunya &amp; Yedekleme Yoneticisi
+            {t.title}
           </h2>
-          <p className="mt-1 text-xs text-slate-400">Hazir harita (.zip / .mcworld) yukle, dunyalar arasi gecis yap ve tek tikla yedek al.</p>
+          <p className="mt-1 text-xs text-slate-400">{t.subtitle}</p>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -113,11 +116,11 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
             className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/15 px-4 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/25"
           >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Archive className="h-4 w-4" />}
-            Hizli Yedek Al
+            {t.quickBackup}
           </button>
           <label className="flex cursor-pointer items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:brightness-110">
             <Upload className="h-4 w-4" />
-            <span>Dunya Yukle (.zip / .mcworld)</span>
+            <span>{t.uploadWorld}</span>
             <input
               type="file"
               className="hidden"
@@ -137,9 +140,9 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="glass-card rounded-2xl p-5">
-          <h3 className="mb-3 text-sm font-semibold text-white">Yuklu Dunyalar</h3>
+          <h3 className="mb-3 text-sm font-semibold text-white">{t.loadedWorlds}</h3>
           {worlds.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">Sunucu en az bir kez baslatildiginda dunya klasoru burada gorunur veya harita yukleyebilirsiniz.</p>
+            <p className="py-6 text-center text-xs text-slate-500">{t.noWorlds}</p>
           ) : (
             <div className="space-y-2.5">
               {worlds.map((w) => (
@@ -148,7 +151,7 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-white">{w.name}</span>
                       {w.active && (
-                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">Aktif</span>
+                        <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">{t.activeBadge}</span>
                       )}
                     </div>
                     <div className="mt-0.5 text-xs text-slate-400">{formatBytes(w.sizeBytes)} • {w.edition}</div>
@@ -159,13 +162,13 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
                         onClick={() => switchWorld(w.name)}
                         className="flex items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/30"
                       >
-                        <Check className="h-3.5 w-3.5" /> Sec
+                        <Check className="h-3.5 w-3.5" /> {t.selectBtn}
                       </button>
                     )}
                     <a
                       href={`${getApiBaseUrl()}/api/servers/${server.id}/worlds/${encodeURIComponent(w.name)}/export`}
                       className="rounded-lg bg-white/5 p-1.5 text-slate-300 hover:bg-white/10"
-                      title="ZIP Indir"
+                      title={t.downloadZipTitle}
                     >
                       <Download className="h-3.5 w-3.5" />
                     </a>
@@ -188,9 +191,9 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
         </div>
 
         <div className="glass-card rounded-2xl p-5">
-          <h3 className="mb-3 text-sm font-semibold text-white">Yedekler ({backups.length})</h3>
+          <h3 className="mb-3 text-sm font-semibold text-white">{t.backupsTitle} ({backups.length})</h3>
           {backups.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">Henuz alinmis bir yedek yok.</p>
+            <p className="py-6 text-center text-xs text-slate-500">{t.noBackups}</p>
           ) : (
             <div className="space-y-2.5">
               {backups.map((b) => (
@@ -206,7 +209,7 @@ export const WorldsPage: React.FC<Props> = ({ server, onRefresh }) => {
                       onClick={() => restoreBackup(b.filename)}
                       className="flex items-center gap-1 rounded-lg bg-cyan-500/20 px-2.5 py-1.5 text-xs font-medium text-cyan-300 hover:bg-cyan-500/30"
                     >
-                      <RotateCcw className="h-3.5 w-3.5" /> Geri Yukle
+                      <RotateCcw className="h-3.5 w-3.5" /> {t.restoreBtn}
                     </button>
                     <button
                       onClick={async () => {

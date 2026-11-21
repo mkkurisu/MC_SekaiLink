@@ -2,6 +2,9 @@ package com.mcsekailink.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -47,6 +50,9 @@ class MainActivity : AppCompatActivity() {
             JreManager.importJreFromUri(this, uri) { msg ->
                 runOnUiThread {
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    if (JreManager.isInstalled(this@MainActivity)) {
+                        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('sekai-jre-updated'))", null)
+                    }
                 }
             }
         }
@@ -149,7 +155,7 @@ class MainActivity : AppCompatActivity() {
     private fun waitForCoreAndLoad() {
         Thread {
             var ready = false
-            for (i in 1..25) {
+            for (i in 1..50) {
                 try {
                     val conn = (URL("http://127.0.0.1:25580/api/health").openConnection() as HttpURLConnection).apply {
                         connectTimeout = 500
@@ -171,8 +177,9 @@ class MainActivity : AppCompatActivity() {
                         null,
                         """
                         <html><body style="background:#070b14;color:#f8fafc;font-family:sans-serif;padding:24px;text-align:center;">
-                          <h2 style="color:#fb7185;">Yerel Cekirdek Baslatilamadi</h2>
-                          <p style="color:#94a3b8;font-size:14px;">libsekailink_core.so bulunamadi veya baslatilamadi. Tekrar deneyebilir veya uzak sunucuya baglanabilirsiniz.</p>
+                          <h2 style="color:#fb7185;">Yerel Çekirdek Başlatılamadı</h2>
+                          <p style="color:#94a3b8;font-size:14px;">libsekailink_core.so bulunamadı veya geç yanıt verdi. Tekrar deneyebilirsiniz.</p>
+                          <button onclick="location.href='http://127.0.0.1:25580'" style="margin-top:16px;padding:10px 20px;border:none;border-radius:12px;background:#10b981;color:#020617;font-weight:bold;font-size:14px;">Tekrar Dene</button>
                         </body></html>
                         """.trimIndent(),
                         "text/html",
@@ -196,6 +203,9 @@ class MainActivity : AppCompatActivity() {
             JreManager.installArm64Jre(this@MainActivity) { msg ->
                 runOnUiThread {
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                    if (JreManager.isInstalled(this@MainActivity)) {
+                        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('sekai-jre-updated'))", null)
+                    }
                 }
             }
         }
@@ -204,6 +214,17 @@ class MainActivity : AppCompatActivity() {
         fun importArm64JreFile() {
             runOnUiThread {
                 jrePickerLauncher.launch(arrayOf("*/*"))
+            }
+        }
+
+        @JavascriptInterface
+        fun copyToClipboard(text: String): Boolean {
+            return try {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("MC SekaiLink", text))
+                true
+            } catch (_: Exception) {
+                false
             }
         }
 

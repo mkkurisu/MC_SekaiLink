@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, Download, Info, Loader2, Sparkles, Upload } from 'lucide-react';
 import { apiFetch, formatBytes, getApiBaseUrl } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { PackInfo, ServerInstance } from '../types';
 
 interface Props {
   server: ServerInstance | null;
+  lang: Lang;
 }
 
-export const PacksShadersPage: React.FC<Props> = ({ server }) => {
+export const PacksShadersPage: React.FC<Props> = ({ server, lang }) => {
+  const t = translations[lang].packs;
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [required, setRequired] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -32,10 +35,10 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
       const fd = new FormData();
       fd.append('file', file);
       await apiFetch<PackInfo>(`/api/servers/${server.id}/packs/upload`, { method: 'POST', body: fd });
-      setMsg(`Yuklendi ve SHA-1 hesaplandi: ${file.name}`);
+      setMsg(`${t.uploadedMsgPrefix} ${file.name}`);
       await loadPacks();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Yukleme hatasi');
+      setMsg(e instanceof Error ? e.message : t.uploadErr);
     } finally {
       setUploading(false);
     }
@@ -50,17 +53,17 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
         method: 'POST',
         body: JSON.stringify({ filename, required }),
       });
-      setMsg(`${filename} sunucuya baglandi! Oyuncular giriste otomatik indirecek.`);
+      setMsg(`${filename} ${t.appliedMsgSuffix}`);
       await loadPacks();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Uygulama hatasi');
+      setMsg(e instanceof Error ? e.message : t.applyErr);
     } finally {
       setApplying('');
     }
   };
 
   if (!server) {
-    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">Once bir sunucu secin.</div>;
+    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">{t.selectServerFirst}</div>;
   }
 
   return (
@@ -69,11 +72,9 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
         <div>
           <h2 className="flex items-center gap-2 text-lg font-bold text-white">
             <Sparkles className="h-5 w-5 text-cyan-400" />
-            Shader, Resource Pack & Istemci Paketi Merkezi
+            {t.title}
           </h2>
-          <p className="mt-1 text-xs text-slate-400">
-            Vanilla Core Shader / Kaynak Paketi (.zip) yukle, otomatik SHA-1 uret ve sunucuya tek tikla bagla.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t.subtitle}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -82,11 +83,11 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
             className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10"
           >
             <Download className="h-4 w-4 text-emerald-400" />
-            Arkadaslar Icin .mrpack Indir
+            {t.exportMrpack}
           </a>
           <label className="flex cursor-pointer items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-xs font-semibold text-slate-950 hover:brightness-110">
             {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-            <span>Paket / Shader Yukle (.zip / .mcpack)</span>
+            <span>{t.uploadBtn}</span>
             <input
               type="file"
               className="hidden"
@@ -104,10 +105,10 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-cyan-400" />
         <div className="space-y-1">
           <p>
-            <strong>Java Shader Notu:</strong> Iris / OptiFine shader&apos;lari (BSL, Complementary vb.) oyuncunun GPU&apos;sunda calisir; arkadaslarina dagitmak icin yukaridaki <code>.mrpack</code> disa aktarimini kullanabilirsin.
+            <strong>{t.javaShaderTitle}</strong> {t.javaShaderDesc}
           </p>
           <p>
-            <strong>Sunucu Zorunlu Paket &amp; Vanilla Core Shaders:</strong> Buraya yuklenen <code>.zip</code> kaynak/core-shader paketleri dahili HTTP sunucumuzdan otomatik SHA-1 ile tum oyunculara indirilir.
+            <strong>{t.serverPackTitle}</strong> {t.serverPackDesc}
           </p>
         </div>
       </div>
@@ -124,11 +125,11 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
             onChange={(e) => setRequired(e.target.checked)}
             className="h-4 w-4 accent-emerald-500"
           />
-          Paketi oyuncular icin zorunlu kil (<code>require-resource-pack=true</code>)
+          {t.requireLabel} (<code>require-resource-pack=true</code>)
         </label>
 
         {packs.length === 0 ? (
-          <div className="py-10 text-center text-sm text-slate-500">Henuz yuklenmis kaynak paketi veya shader paketi yok.</div>
+          <div className="py-10 text-center text-sm text-slate-500">{t.empty}</div>
         ) : (
           <div className="space-y-2.5">
             {packs.map((p) => (
@@ -139,7 +140,7 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
                     <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] uppercase text-cyan-300">{p.kind}</span>
                     {p.applied && (
                       <span className="flex items-center gap-1 rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300">
-                        <CheckCircle2 className="h-3 w-3" /> Sunucuda Aktif
+                        <CheckCircle2 className="h-3 w-3" /> {t.activeBadge}
                       </span>
                     )}
                   </div>
@@ -152,7 +153,7 @@ export const PacksShadersPage: React.FC<Props> = ({ server }) => {
                   onClick={() => applyToServer(p.filename)}
                   className="rounded-xl bg-emerald-500/20 px-4 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50"
                 >
-                  {applying === p.filename ? 'Uygulaniyor...' : 'Sunucuya Uygula'}
+                  {applying === p.filename ? t.applyingBtn : t.applyBtn}
                 </button>
               </div>
             ))}

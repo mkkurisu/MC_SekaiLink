@@ -74,11 +74,11 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
 
   const handleSubmit = async () => {
     if (!name.trim()) {
-      setError('Sunucu adi gerekli');
+      setError(t.errNameRequired);
       return;
     }
     if (selectedEngine !== 'bds' && selectedEngine !== 'powernukkitx' && !eulaAccepted) {
-      setError('EULA onayi gerekli');
+      setError(t.errEulaRequired);
       return;
     }
     setSubmitting(true);
@@ -109,7 +109,7 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
       onCreated(created);
       onClose();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Hata olustu');
+      setError(e instanceof Error ? e.message : t.errGeneric);
     } finally {
       setSubmitting(false);
     }
@@ -159,7 +159,7 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                     {
                       id: 'crossplay' as ModeChoice,
                       icon: Globe2,
-                      badge: 'Onerilen',
+                      badge: t.recommended,
                       title: t.modeCrossplay,
                       desc: t.modeCrossplayDesc,
                       accent: 'from-emerald-500/20 to-cyan-500/10 border-emerald-500/40',
@@ -240,11 +240,11 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                   </div>
 
                   <div>
-                    <label className="mb-1.5 block text-xs font-medium text-slate-300">Minecraft / Motor Surumu</label>
+                    <label className="mb-1.5 block text-xs font-medium text-slate-300">{t.engineVersionLabel}</label>
                     {loadingVersions ? (
                       <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm text-slate-400">
                         <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
-                        Surum listesi aliniyor...
+                        {t.loadingVersions}
                       </div>
                     ) : (
                       <select
@@ -302,9 +302,9 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                           onChange={(e) => setJvmPreset(e.target.value as JVMPreset)}
                           className="w-full rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-white outline-none"
                         >
-                          <option value="aikar">Aikar&apos;s Flags (Onerilen)</option>
-                          <option value="zgc">Generational ZGC</option>
-                          <option value="standard">Standard</option>
+                          <option value="aikar">{t.jvmAikar}</option>
+                          <option value="zgc">{t.jvmZgc}</option>
+                          <option value="standard">{t.jvmStandard}</option>
                         </select>
                       </div>
                     )}
@@ -353,15 +353,15 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                         className="mt-0.5 h-4 w-4 accent-amber-400"
                       />
                       <div>
-                        <div className="font-medium text-white">Cevrimdisi / Premium Olmayan Giris (Offline Mode)</div>
+                        <div className="font-medium text-white">{t.offlineTitle}</div>
                         <p className="mt-0.5 text-xs text-slate-400">
-                          Orijinal hesabi olmayan (crackli/offline) Java ve Bedrock oyuncularinin girmesine izin verir (online-mode=false, enforce-secure-profile=false, Geyser offline).
+                          {t.offlineDesc}
                         </p>
                       </div>
                     </label>
                     {offlineMode && (
                       <p className="pl-7 text-[11px] text-amber-300/90">
-                        Guvenlik ipucu: Herkese acik tunel kullanirken isim taklidini onlemek icin Whitelist veya Modrinth&apos;ten AuthMe / LoginSecurity kurmaniz onerilir.
+                        {t.offlineTip}
                       </p>
                     )}
                   </div>
@@ -389,14 +389,14 @@ export const CreateServerModal: React.FC<Props> = ({ open, onClose, lang, isAndr
                 onClick={() => (step > 1 ? setStep((step - 1) as 1 | 2) : onClose())}
                 className="rounded-xl px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/5"
               >
-                {step === 1 ? translations[lang].actions.cancel : 'Geri'}
+                {step === 1 ? translations[lang].actions.cancel : t.back}
               </button>
               {step < 3 ? (
                 <button
                   onClick={() => setStep((step + 1) as 2 | 3)}
                   className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110"
                 >
-                  Devam Et
+                  {t.next}
                 </button>
               ) : (
                 <button

@@ -2,5 +2,6 @@
 <resources>
     <string name="app_name">MC SekaiLink</string>
     <string name="service_notification_title">MC SekaiLink Aktif</string>
-    <string name="service_notification_text">Yerel sunucu cekirdegi arka planda calisiyor</string>
+    <string name="service_notification_text">Yerel sunucu çekirdeği arka planda çalışıyor</string>
+    <string name="action_stop">Durdur</string>
 </resources>

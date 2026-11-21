@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +21,12 @@ import (
 )
 
 const defaultE4mcBrokerURL = "https://broker.e4mc.link/getBestRelay"
+
+func init() {
+	if os.Getenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING") == "" {
+		_ = os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
+	}
+}
 
 type e4mcRelayInfo struct {
 	ID   string `json:"id"`
@@ -62,18 +70,68 @@ func (em *E4mcManager) startWithTLS(brokerURL string, localPort int, tlsConf *tl
 	if localPort <= 0 || localPort > 65535 {
 		return em.Status(), fmt.Errorf("gecersiz yerel port: %d", localPort)
 	}
-	brokerURL = strings.TrimSpace(brokerURL)
-	if brokerURL == "" {
-		brokerURL = defaultE4mcBrokerURL
+	rawBrokerURL := strings.TrimSpace(brokerURL)
+	isDefaultBroker := rawBrokerURL == ""
+	if rawBrokerURL == "" {
+		rawBrokerURL = defaultE4mcBrokerURL
 	}
 
 	_ = em.Stop()
 
-	relay, err := fetchE4mcRelay(brokerURL)
+	brokerRelay, err := fetchE4mcRelay(rawBrokerURL)
 	if err != nil {
 		return em.failState(localPort, "", "", fmt.Errorf("e4mc bolge seciciye ulasilamadi: %w", err))
 	}
 
+	var candidates []e4mcRelayInfo
+	if isDefaultBroker {
+		candidates = sortE4mcCandidatesByRTT(context.Background(), buildE4mcRelayCandidates(brokerRelay))
+	} else {
+		candidates = []e4mcRelayInfo{brokerRelay}
+	}
+
+	var lastErr error
+	var lastRelay e4mcRelayInfo
+	for _, relay := range candidates {
+		lastRelay = relay
+		qConn, ctrlStream, domain, notice, latencyMs, dialErr := dialE4mcRelay(relay, tlsConf)
+		if dialErr != nil {
+			lastErr = dialErr
+			continue
+		}
+
+		loopCtx, cancel := context.WithCancel(context.Background())
+
+		em.mu.Lock()
+		em.stopSeq++
+		seq := em.stopSeq
+		em.cancel = cancel
+		em.qConn = qConn
+		em.ctrlStream = ctrlStream
+		em.state = models.E4mcState{
+			Running:   true,
+			Region:    strings.ToUpper(strings.TrimSpace(relay.ID)),
+			RelayHost: relay.Host,
+			LocalPort: localPort,
+			Domain:    domain,
+			LatencyMs: latencyMs,
+			Notice:    notice,
+		}
+		st := em.state
+		em.mu.Unlock()
+
+		go em.controlLoop(loopCtx, seq, ctrlStream, qConn)
+		go em.acceptLoop(loopCtx, seq, qConn, localPort)
+		return st, nil
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("e4mc relay sunucusuna baglanilamadi")
+	}
+	return em.failState(localPort, lastRelay.ID, lastRelay.Host, lastErr)
+}
+
+func dialE4mcRelay(relay e4mcRelayInfo, tlsConf *tls.Config) (*quic.Conn, *quic.Stream, string, string, int64, error) {
 	var tlsCfg *tls.Config
 	if tlsConf != nil {
 		tlsCfg = tlsConf.Clone()
@@ -99,14 +157,14 @@ func (em *E4mcManager) startWithTLS(brokerURL string, localPort int, tlsConf *tl
 	qConn, err := quic.DialAddr(dialCtx, relayAddr, tlsCfg, &quic.Config{
 		MaxIncomingStreams:             512,
 		MaxIdleTimeout:                 30 * time.Second,
-		KeepAlivePeriod:                5 * time.Second,
-		InitialStreamReceiveWindow:     1250000,
-		MaxStreamReceiveWindow:         6 * 1024 * 1024,
-		InitialConnectionReceiveWindow: 2 * 1024 * 1024,
-		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
+		KeepAlivePeriod:                4 * time.Second,
+		InitialStreamReceiveWindow:     2 * 1024 * 1024,
+		MaxStreamReceiveWindow:         8 * 1024 * 1024,
+		InitialConnectionReceiveWindow: 4 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     16 * 1024 * 1024,
 	})
 	if err != nil {
-		return em.failState(localPort, relay.ID, relay.Host, fmt.Errorf("e4mc QUIC baglantisi kurulamadi (%s): %w", relayAddr, err))
+		return nil, nil, "", "", 0, fmt.Errorf("e4mc QUIC baglantisi kurulamadi (%s): %w", relayAddr, err)
 	}
 	latencyMs := time.Since(t0).Milliseconds()
 
@@ -115,14 +173,14 @@ func (em *E4mcManager) startWithTLS(brokerURL string, localPort int, tlsConf *tl
 	ctrlStream, err := qConn.OpenStreamSync(streamCtx)
 	if err != nil {
 		_ = qConn.CloseWithError(0, "stream open failed")
-		return em.failState(localPort, relay.ID, relay.Host, fmt.Errorf("e4mc kontrol akisi acilamadi: %w", err))
+		return nil, nil, "", "", 0, fmt.Errorf("e4mc kontrol akisi acilamadi: %w", err)
 	}
 
 	_ = ctrlStream.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := writeQuiclimeControl(ctrlStream, e4mcControlMsg{Kind: "request_domain_assignment"}); err != nil {
 		_ = ctrlStream.Close()
 		_ = qConn.CloseWithError(0, "write failed")
-		return em.failState(localPort, relay.ID, relay.Host, err)
+		return nil, nil, "", "", 0, err
 	}
 	_ = ctrlStream.SetWriteDeadline(time.Time{})
 
@@ -133,7 +191,7 @@ func (em *E4mcManager) startWithTLS(brokerURL string, localPort int, tlsConf *tl
 		if err != nil {
 			_ = ctrlStream.Close()
 			_ = qConn.CloseWithError(0, "handshake failed")
-			return em.failState(localPort, relay.ID, relay.Host, fmt.Errorf("e4mc alan adi yaniti alinamadi: %w", err))
+			return nil, nil, "", "", 0, fmt.Errorf("e4mc alan adi yaniti alinamadi: %w", err)
 		}
 		var msg e4mcControlMsg
 		if err := json.Unmarshal(raw, &msg); err != nil {
@@ -149,30 +207,96 @@ func (em *E4mcManager) startWithTLS(brokerURL string, localPort int, tlsConf *tl
 		}
 	}
 	_ = ctrlStream.SetReadDeadline(time.Time{})
+	return qConn, ctrlStream, domain, notice, latencyMs, nil
+}
 
-	loopCtx, cancel := context.WithCancel(context.Background())
-
-	em.mu.Lock()
-	em.stopSeq++
-	seq := em.stopSeq
-	em.cancel = cancel
-	em.qConn = qConn
-	em.ctrlStream = ctrlStream
-	em.state = models.E4mcState{
-		Running:   true,
-		Region:    strings.ToUpper(strings.TrimSpace(relay.ID)),
-		RelayHost: relay.Host,
-		LocalPort: localPort,
-		Domain:    domain,
-		LatencyMs: latencyMs,
-		Notice:    notice,
+func isEuropeanE4mcRegion(regionID string) bool {
+	switch strings.ToLower(strings.TrimSpace(regionID)) {
+	case "eu", "de", "uk", "fr", "nl", "pl", "fi", "ch", "at", "se":
+		return true
+	default:
+		return false
 	}
-	st := em.state
-	em.mu.Unlock()
+}
 
-	go em.controlLoop(loopCtx, seq, ctrlStream, qConn)
-	go em.acceptLoop(loopCtx, seq, qConn, localPort)
-	return st, nil
+func buildE4mcRelayCandidates(brokerRelay e4mcRelayInfo) []e4mcRelayInfo {
+	candidates := make([]e4mcRelayInfo, 0, 3)
+	seen := make(map[string]bool)
+	add := func(r e4mcRelayInfo) {
+		key := strings.ToLower(strings.TrimSpace(r.Host))
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		candidates = append(candidates, r)
+	}
+
+	add(brokerRelay)
+	if isEuropeanE4mcRegion(brokerRelay.ID) {
+		port := brokerRelay.Port
+		if port <= 0 {
+			port = 25575
+		}
+		add(e4mcRelayInfo{ID: "de", Host: "de.e4mc.link", Port: port})
+		add(e4mcRelayInfo{ID: "eu", Host: "eu.e4mc.link", Port: port})
+	}
+	return candidates
+}
+
+type e4mcProbedRelay struct {
+	relay e4mcRelayInfo
+	rttMs int64
+	order int
+}
+
+func probeE4mcCandidates(ctx context.Context, candidates []e4mcRelayInfo, timeout time.Duration) []e4mcProbedRelay {
+	results := make([]e4mcProbedRelay, len(candidates))
+	var wg sync.WaitGroup
+	for i, c := range candidates {
+		wg.Add(1)
+		go func(idx int, r e4mcRelayInfo) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			d := net.Dialer{Timeout: timeout}
+			t0 := time.Now()
+			conn, err := d.DialContext(pctx, "tcp", net.JoinHostPort(r.Host, "25565"))
+			var rtt int64
+			if err == nil {
+				rtt = time.Since(t0).Milliseconds()
+				if rtt < 1 {
+					rtt = 1
+				}
+				_ = conn.Close()
+			}
+			results[idx] = e4mcProbedRelay{relay: r, rttMs: rtt, order: idx}
+		}(i, c)
+	}
+	wg.Wait()
+	return results
+}
+
+func sortE4mcCandidatesByRTT(ctx context.Context, candidates []e4mcRelayInfo) []e4mcRelayInfo {
+	if len(candidates) <= 1 {
+		return candidates
+	}
+	probed := probeE4mcCandidates(ctx, candidates, 1200*time.Millisecond)
+	sort.SliceStable(probed, func(i, j int) bool {
+		aOK := probed[i].rttMs > 0
+		bOK := probed[j].rttMs > 0
+		if aOK != bOK {
+			return aOK
+		}
+		if aOK && probed[i].rttMs != probed[j].rttMs {
+			return probed[i].rttMs < probed[j].rttMs
+		}
+		return probed[i].order < probed[j].order
+	})
+	out := make([]e4mcRelayInfo, 0, len(probed))
+	for _, p := range probed {
+		out = append(out, p.relay)
+	}
+	return out
 }
 
 func (em *E4mcManager) failState(localPort int, region, relayHost string, err error) (models.E4mcState, error) {

@@ -20,7 +20,8 @@ import {
   Square,
   Zap,
 } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, copyTextSafe } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { AppConfig, BoreState, E4mcState, NetworkDiagnostics, RelayState, ServerInstance, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
@@ -32,6 +33,7 @@ interface Props {
   bore: BoreState | null;
   e4mc: E4mcState | null;
   relay: RelayState | null;
+  lang: Lang;
   onRefreshTunnel: () => void;
   onRefreshConfig: () => void;
 }
@@ -44,9 +46,11 @@ export const NetworkPage: React.FC<Props> = ({
   bore,
   e4mc,
   relay,
+  lang,
   onRefreshTunnel,
   onRefreshConfig,
 }) => {
+  const t = translations[lang].network;
   const [diag, setDiag] = useState<NetworkDiagnostics | null>(null);
   const [loadingDiag, setLoadingDiag] = useState(false);
   const [busyPlayit, setBusyPlayit] = useState(false);
@@ -72,12 +76,10 @@ export const NetworkPage: React.FC<Props> = ({
     server && server.engine !== 'bds' && server.engine !== 'powernukkitx' && !server.crossPlay?.enabled,
   );
   const isCrossPlay = Boolean(server && server.crossPlay?.enabled);
-  const needsBedrock = Boolean(
-    !server || server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx',
-  );
+  const isPureBedrock = Boolean(server && (server.engine === 'bds' || server.engine === 'powernukkitx'));
 
   const copyText = async (key: string, val: string) => {
-    await navigator.clipboard.writeText(val);
+    await copyTextSafe(val);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(''), 1600);
   };
@@ -103,10 +105,10 @@ export const NetworkPage: React.FC<Props> = ({
         method: 'POST',
         body: JSON.stringify({ localPort }),
       });
-      setMsg(`Dusuk pingli e4mc (${st.region}) tuneli acildi! Java adresin: ${st.domain}`);
+      setMsg(`${t.e4mcOpenedMsg} ${st.domain} (${st.region} • ${st.latencyMs} ms)`);
       onRefreshTunnel();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'e4mc QUIC tuneli baslatilamadi');
+      setMsg(e instanceof Error ? e.message : t.e4mcErr);
     } finally {
       setBusyE4mc(false);
     }
@@ -131,10 +133,10 @@ export const NetworkPage: React.FC<Props> = ({
         method: 'POST',
         body: JSON.stringify({ serverHost: boreHost.trim() || 'bore.pub', localPort }),
       });
-      setMsg(`Hizli tunel acildi! Java adresin: ${st.address}`);
+      setMsg(`${t.boreOpenedMsg} ${st.address}`);
       onRefreshTunnel();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'bore.pub tuneli baslatilamadi');
+      setMsg(e instanceof Error ? e.message : t.boreErr);
     } finally {
       setBusyBore(false);
     }
@@ -169,10 +171,10 @@ export const NetworkPage: React.FC<Props> = ({
           wantBedrock,
         }),
       });
-      setMsg('SekaiLink Relay baglantisi kuruldu!');
+      setMsg(t.relayConnectedMsg);
       onRefreshTunnel();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'Relay baglantisi basarisiz');
+      setMsg(e instanceof Error ? e.message : t.relayErr);
     } finally {
       setBusyRelay(false);
     }
@@ -200,7 +202,7 @@ export const NetworkPage: React.FC<Props> = ({
       setTimeout(onRefreshTunnel, 1500);
       setTimeout(onRefreshTunnel, 3500);
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'playit hatasi');
+      setMsg(e instanceof Error ? e.message : t.playitErr);
     } finally {
       setBusyPlayit(false);
     }
@@ -234,9 +236,9 @@ export const NetworkPage: React.FC<Props> = ({
           body: JSON.stringify({ port: bPort, protocol: 'UDP', desc: 'MC SekaiLink Bedrock' }),
         });
       }
-      setMsg('UPnP port yonlendirme modemde acildi.');
+      setMsg(t.upnpSuccessMsg);
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : 'UPnP port acilamadi');
+      setMsg(e instanceof Error ? e.message : t.upnpErr);
     } finally {
       setBusyUpnp(false);
     }
@@ -249,11 +251,7 @@ export const NetworkPage: React.FC<Props> = ({
       body: JSON.stringify({ remoteEnabled: !config.remoteEnabled }),
     });
     onRefreshConfig();
-    setMsg(
-      !config.remoteEnabled
-        ? 'Uzak erisim aktif edildi (0.0.0.0). Telefonundan baglanabilirsin.'
-        : 'Uzak erisim kapatildi (127.0.0.1).',
-    );
+    setMsg(!config.remoteEnabled ? t.remoteOnMsg : t.remoteOffMsg);
   };
 
   const pairingUrl = `http://${diag?.localIP || system?.localIP || '127.0.0.1'}:${config?.apiPort || 25580}`;
@@ -265,11 +263,9 @@ export const NetworkPage: React.FC<Props> = ({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Zap className="h-5 w-5 text-emerald-400" />
-            <h3 className="text-base font-bold text-white">
-              Dusuk Ping Java Tuneli (e4mc — Otomatik En Yakin Bolge)
-            </h3>
+            <h3 className="text-base font-bold text-white">{t.e4mcTitle}</h3>
             <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-emerald-300">
-              Hesapsiz • Avrupa/Global
+              {t.e4mcBadge}
             </span>
             {e4mc?.running && (
               <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-200">
@@ -277,9 +273,7 @@ export const NetworkPage: React.FC<Props> = ({
               </span>
             )}
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Almanya/Avrupa QUIC aktarim noktasina baglanir ve port gerektirmeyen temiz <code>*.e4mc.link</code> adresi verir. Hesap veya ek uygulama gerektirmez.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t.e4mcDesc}</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -290,7 +284,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110 disabled:opacity-50"
             >
               {busyE4mc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              Tek Tikla Baslat (Dusuk Ping)
+              {t.e4mcStartBtn}
             </button>
           ) : (
             <button
@@ -299,7 +293,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
             >
               <Square className="h-4 w-4 fill-current" />
-              Tuneli Kapat
+              {t.e4mcCloseBtn}
             </button>
           )}
         </div>
@@ -309,7 +303,7 @@ export const NetworkPage: React.FC<Props> = ({
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2 text-[11px] text-emerald-200">
           <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
           <span>
-            Sunucu sahibiysen bu bilgisayardan <code className="font-mono text-white">localhost:{server?.javaPort || 25565}</code> adresiyle baglan (0 ms lag). Dis adresi yalnizca baska evdeki arkadaslarin kullansin.
+            {t.e4mcHostTipPrefix} <code className="font-mono text-white">localhost:{server?.javaPort || 25565}</code> {t.e4mcHostTipSuffix}
           </span>
         </div>
       )}
@@ -317,11 +311,14 @@ export const NetworkPage: React.FC<Props> = ({
       {e4mc?.running && e4mc.domain && (
         <div className="mt-4">
           <CopyBox
-            label={`Uzaktaki Arkadaslarin Icin Java Adresi (${e4mc.region || 'EU'} • ${e4mc.latencyMs} ms)`}
+            label={`${t.e4mcCopyLabel} (${e4mc.region || 'EU'} • ${e4mc.latencyMs} ms)`}
             value={e4mc.domain}
             copied={copiedKey === 'e4mc'}
+            copyLabel={t.copy}
+            copiedLabel={t.copied}
+            qrTitle={t.qrCodeTitle}
             onCopy={() => copyText('e4mc', e4mc.domain)}
-            onQr={() => setQrModal({ title: 'e4mc Java Adresi', subtitle: 'Minecraft Java > Dogrudan Baglanti (Port gerekmez)', value: e4mc.domain })}
+            onQr={() => setQrModal({ title: t.e4mcQrTitle, subtitle: t.e4mcQrSubtitle, value: e4mc.domain })}
           />
         </div>
       )}
@@ -340,11 +337,9 @@ export const NetworkPage: React.FC<Props> = ({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Zap className="h-5 w-5 text-amber-400" />
-            <h3 className="text-base font-bold text-white">
-              TCP Yedek Tuneli (bore.pub — ABD / Ozel Sunucu)
-            </h3>
+            <h3 className="text-base font-bold text-white">{t.boreTitle}</h3>
             <span className="rounded-full bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-amber-300">
-              Hesapsiz • TCP Fallback
+              {t.boreBadge}
             </span>
             {bore?.running && bore.latencyMs ? (
               <span className="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">
@@ -352,9 +347,7 @@ export const NetworkPage: React.FC<Props> = ({
               </span>
             ) : null}
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Genel <code>bore.pub</code> sunucusu ABD merkezlidir (Turkiye/Avrupa&apos;dan ping yuksektir). UDP/QUIC engelli aglarda TCP yedegi olarak veya kendi Avrupa <code>bore</code> sunucunla kullan.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t.boreDesc}</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -365,7 +358,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/20 hover:brightness-110 disabled:opacity-50"
             >
               {busyBore ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              Tek Tikla Baslat
+              {t.boreStartBtn}
             </button>
           ) : (
             <button
@@ -374,7 +367,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
             >
               <Square className="h-4 w-4 fill-current" />
-              Tuneli Kapat
+              {t.boreStopBtn}
             </button>
           )}
         </div>
@@ -382,25 +375,28 @@ export const NetworkPage: React.FC<Props> = ({
 
       {!compact && (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-slate-400">Tunel Sunucusu:</span>
+          <span className="text-slate-400">{t.boreServerLabel}</span>
           <input
             value={boreHost}
             onChange={(e) => setBoreHost(e.target.value)}
             disabled={Boolean(bore?.running)}
             className="w-48 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 font-mono text-xs text-white outline-none focus:border-emerald-500 disabled:opacity-60"
           />
-          <span className="text-slate-500">Yerel Port: {server?.javaPort || 25565}</span>
+          <span className="text-slate-500">{t.boreLocalPortLabel} {server?.javaPort || 25565}</span>
         </div>
       )}
 
       {bore?.running && bore.address && (
         <div className="mt-4">
           <CopyBox
-            label="Arkadaslarin Icin Java Baglanti Adresi"
+            label={t.boreCopyLabel}
             value={bore.address}
             copied={copiedKey === 'bore'}
+            copyLabel={t.copy}
+            copiedLabel={t.copied}
+            qrTitle={t.qrCodeTitle}
             onCopy={() => copyText('bore', bore.address)}
-            onQr={() => setQrModal({ title: 'bore.pub Java Adresi', subtitle: 'Minecraft Java > Dogrudan Baglanti', value: bore.address })}
+            onQr={() => setQrModal({ title: t.boreQrTitle, subtitle: t.boreQrSub, value: bore.address })}
           />
         </div>
       )}
@@ -419,11 +415,9 @@ export const NetworkPage: React.FC<Props> = ({
         <div>
           <div className="flex items-center gap-2">
             <Globe className="h-5 w-5 text-cyan-400" />
-            <h3 className="text-base font-bold text-white">playit.gg (Bedrock UDP + Sabit Alan Adi)</h3>
+            <h3 className="text-base font-bold text-white">{t.playitTitle}</h3>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Bedrock (UDP) ve Cross-Play sunuculari icin ucretsiz genel adres ve sabit alan adi saglar.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t.playitDesc}</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -434,7 +428,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-500/20 hover:brightness-110 disabled:opacity-50"
             >
               {busyPlayit ? <Loader2 className="h-4 w-4 animate-spin" /> : tunnel?.installed ? <Play className="h-4 w-4 fill-current" /> : <Download className="h-4 w-4" />}
-              {tunnel?.installed ? 'Tuneli Baslat' : 'Kur ve Baslat'}
+              {tunnel?.installed ? t.playitStartBtn : t.playitInstallStartBtn}
             </button>
           ) : (
             <button
@@ -443,7 +437,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
             >
               <Square className="h-4 w-4 fill-current" />
-              Tuneli Durdur
+              {t.playitStopBtn}
             </button>
           )}
         </div>
@@ -452,14 +446,14 @@ export const NetworkPage: React.FC<Props> = ({
       <div className="mt-3 flex items-start gap-2 rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-3.5 py-2 text-[11px] text-cyan-200">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" />
         <span>
-          <strong>Ipucu:</strong> Hesap acmak istemiyorsan cikan Claim baglantisinda <strong>&quot;Continue as Guest&quot; (Misafir Olarak Devam Et)</strong> secenegini kullanabilirsin.
+          <strong>{t.playitGuestTipPrefix}</strong> {t.playitGuestTipBody}
         </span>
       </div>
 
       {tunnel?.claimUrl && (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5">
           <div className="text-xs text-amber-200">
-            <strong>Ilk Kurulum:</strong> Tunelleri aktif etmek icin Claim linkini ac:
+            <strong>{t.playitClaimLabel}</strong> {t.playitClaimDesc}
           </div>
           <a
             href={tunnel.claimUrl}
@@ -467,7 +461,7 @@ export const NetworkPage: React.FC<Props> = ({
             rel="noreferrer"
             className="flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 hover:brightness-110"
           >
-            <span>Claim Linkini Ac</span>
+            <span>{t.playitClaimBtn}</span>
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>
@@ -477,20 +471,26 @@ export const NetworkPage: React.FC<Props> = ({
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {tunnel.javaAddress && (
             <CopyBox
-              label="Java Genel Adresi"
+              label={t.playitJavaLabel}
               value={tunnel.javaAddress}
               copied={copiedKey === 'pjava'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
               onCopy={() => copyText('pjava', tunnel.javaAddress)}
-              onQr={() => setQrModal({ title: 'playit.gg Java Adresi', subtitle: 'Dogrudan Baglanti', value: tunnel.javaAddress })}
+              onQr={() => setQrModal({ title: t.playitJavaQrTitle, subtitle: t.playitQrJavaSub, value: tunnel.javaAddress })}
             />
           )}
           {tunnel.bedrockAddress && (
             <CopyBox
-              label="Bedrock Genel Adresi"
+              label={t.playitBedrockLabel}
               value={tunnel.bedrockAddress}
               copied={copiedKey === 'pbed'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
               onCopy={() => copyText('pbed', tunnel.bedrockAddress)}
-              onQr={() => setQrModal({ title: 'playit.gg Bedrock Adresi', subtitle: 'Bedrock Sunucu Ekle', value: tunnel.bedrockAddress })}
+              onQr={() => setQrModal({ title: t.playitBedrockQrTitle, subtitle: t.playitQrBedrockSub, value: tunnel.bedrockAddress })}
             />
           )}
         </div>
@@ -512,14 +512,12 @@ export const NetworkPage: React.FC<Props> = ({
         <div>
           <div className="flex items-center gap-2">
             <Radio className="h-5 w-5 text-violet-400" />
-            <h3 className="text-base font-bold text-white">SekaiLink Relay (Kendi Acik Kaynak TCP + UDP Aktaricimiz)</h3>
+            <h3 className="text-base font-bold text-white">{t.relayTitle}</h3>
             <span className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-violet-300">
-              Hesapsiz • TCP + UDP
+              {t.relayBadge}
             </span>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
-            Ucretsiz bir sunucuda (orn. Oracle Cloud Free Tier) <code>sekailink-relay</code> calistirarak tamamen kendi altyapinla hem Java hem Bedrock ac.
-          </p>
+          <p className="mt-1 text-xs text-slate-400">{t.relayDesc}</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -530,7 +528,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:brightness-110 disabled:opacity-50"
             >
               {busyRelay ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              Relay&apos;e Baglan
+              {t.relayConnectBtn}
             </button>
           ) : (
             <button
@@ -539,7 +537,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
             >
               <Square className="h-4 w-4 fill-current" />
-              Baglantiyi Kes
+              {t.relayDisconnectBtn}
             </button>
           )}
         </div>
@@ -550,7 +548,7 @@ export const NetworkPage: React.FC<Props> = ({
           value={relayAddr}
           onChange={(e) => setRelayAddr(e.target.value)}
           disabled={Boolean(relay?.running)}
-          placeholder="Relay Adresi (orn: relay.alanadin.com:25590)"
+          placeholder={t.relayAddrPlaceholder}
           className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 disabled:opacity-60"
         />
         <input
@@ -558,33 +556,39 @@ export const NetworkPage: React.FC<Props> = ({
           onChange={(e) => setRelaySecret(e.target.value)}
           disabled={Boolean(relay?.running)}
           type="password"
-          placeholder="Gizli Anahtar (istege bagli)"
+          placeholder={t.relaySecretPlaceholder}
           className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 disabled:opacity-60"
         />
       </div>
 
       <div className="mt-2.5 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-[11px] text-slate-400">
-        Sunucuda baslatma: <span className="text-violet-300">sekailink-relay --listen :25590 --public-host SUNUCU_IP_VEYA_DOMAIN</span>
+        {t.relayCmdHint} <span className="text-violet-300">sekailink-relay --listen :25590 --public-host PUBLIC_IP_OR_DOMAIN</span>
       </div>
 
       {relay?.running && (relay.javaAddress || relay.bedrockAddress) && (
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           {relay.javaAddress && (
             <CopyBox
-              label="Relay Java Adresi (TCP)"
+              label={t.relayJavaCopy}
               value={relay.javaAddress}
               copied={copiedKey === 'rjava'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
               onCopy={() => copyText('rjava', relay.javaAddress)}
-              onQr={() => setQrModal({ title: 'Relay Java Adresi', subtitle: 'Dogrudan Baglanti', value: relay.javaAddress })}
+              onQr={() => setQrModal({ title: t.relayJavaQrTitle, subtitle: t.playitQrJavaSub, value: relay.javaAddress })}
             />
           )}
           {relay.bedrockAddress && (
             <CopyBox
-              label="Relay Bedrock Adresi (UDP)"
+              label={t.relayBedrockCopy}
               value={relay.bedrockAddress}
               copied={copiedKey === 'rbed'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
               onCopy={() => copyText('rbed', relay.bedrockAddress)}
-              onQr={() => setQrModal({ title: 'Relay Bedrock Adresi', subtitle: 'Bedrock Sunucu Ekle', value: relay.bedrockAddress })}
+              onQr={() => setQrModal({ title: t.relayBedrockQrTitle, subtitle: t.playitQrBedrockSub, value: relay.bedrockAddress })}
             />
           )}
         </div>
@@ -603,7 +607,7 @@ export const NetworkPage: React.FC<Props> = ({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <Activity className="h-5 w-5 text-cyan-400" />
-            <h2 className="text-base font-bold text-white">Ag &amp; CGNAT Tanilamasi</h2>
+            <h2 className="text-base font-bold text-white">{t.diagTitle}</h2>
           </div>
           <button
             disabled={loadingDiag}
@@ -611,27 +615,27 @@ export const NetworkPage: React.FC<Props> = ({
             className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-white/10"
           >
             <RefreshCw className={`h-3.5 w-3.5 ${loadingDiag ? 'animate-spin' : ''}`} />
-            Yeniden Test Et
+            {t.retestBtn}
           </button>
         </div>
 
         <div className="mt-3 grid gap-2.5 sm:grid-cols-4">
-          <InfoBox label="Yerel Ag IP" value={diag?.localIP || system?.localIP || '...'} />
-          <InfoBox label="Dis (Public) IP" value={diag?.publicIP || 'Bilinmiyor'} />
-          <InfoBox label="Modem UPnP" value={diag?.upnpAvailable ? 'Destekleniyor' : 'Yanit Yok'} />
+          <InfoBox label={t.localIp} value={diag?.localIP || system?.localIP || '...'} />
+          <InfoBox label={t.publicIp} value={diag?.publicIP || t.unknown} />
+          <InfoBox label={t.upnpLabel} value={diag?.upnpAvailable ? t.upnpSupported : t.upnpNoResponse} />
           <InfoBox
-            label="CGNAT Durumu"
-            value={diag?.behindCGNAT ? 'CGNAT Var' : diag?.status === 'direct_ok' ? 'Dogrudan Acik' : 'Bilinmiyor'}
+            label={t.cgnatLabel}
+            value={diag?.behindCGNAT ? t.cgnatYes : diag?.status === 'direct_ok' ? t.cgnatDirect : t.unknown}
             highlight={diag?.behindCGNAT ? 'warn' : 'ok'}
           />
         </div>
 
         {(diag?.e4mcPingMs || diag?.playitPingMs || diag?.borePingMs) ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3 text-xs">
-            <span className="text-slate-400">Canli Tunel Pingi:</span>
+            <span className="text-slate-400">{t.livePingLabel}</span>
             {diag.e4mcPingMs ? <PingPill label={`e4mc (${diag.e4mcRegion || 'EU'})`} ms={diag.e4mcPingMs} /> : null}
             {diag.playitPingMs ? <PingPill label="playit.gg (Anycast)" ms={diag.playitPingMs} /> : null}
-            {diag.borePingMs ? <PingPill label="bore.pub (ABD)" ms={diag.borePingMs} /> : null}
+            {diag.borePingMs ? <PingPill label="bore.pub (US)" ms={diag.borePingMs} /> : null}
           </div>
         ) : null}
       </div>
@@ -645,7 +649,7 @@ export const NetworkPage: React.FC<Props> = ({
               onClick={() => setShowAdvanced(!showAdvanced)}
               className="flex w-full items-center justify-between px-5 py-3.5 text-left text-xs font-semibold text-slate-300 hover:text-white"
             >
-              <span>Diger Tuneller &amp; Sabit Alan Adi (playit.gg Anycast, bore.pub TCP Yedek, SekaiLink Relay)</span>
+              <span>{t.advancedToggle}</span>
               {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </button>
             {showAdvanced && (
@@ -659,20 +663,27 @@ export const NetworkPage: React.FC<Props> = ({
         </>
       ) : (
         <>
-          {needsBedrock && (
-            <div className="flex items-center gap-2.5 rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-2.5 text-xs text-emerald-200">
-              <Info className="h-4 w-4 shrink-0 text-emerald-400" />
-              <span>
-                Secili sunucu <strong>Bedrock (UDP)</strong> trafigi kullandigi icin <strong>playit.gg</strong> ve <strong>SekaiLink Relay</strong> secenekleri one cikarildi.
-              </span>
-            </div>
-          )}
+          <div className="flex items-start gap-2.5 rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-200">
+            <Info className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+            <span>{isCrossPlay ? t.crossplayNotice : isPureBedrock ? t.bedrockOnlyNotice : t.crossplayNotice}</span>
+          </div>
           {renderPlayitCard()}
+          {isCrossPlay && renderE4mcCard()}
           {renderRelayCard()}
           {isCrossPlay && (
-            <div className="space-y-4">
-              {renderE4mcCard(true)}
-              {renderBoreCard(true)}
+            <div className="glass-card rounded-2xl">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="flex w-full items-center justify-between px-5 py-3.5 text-left text-xs font-semibold text-slate-300 hover:text-white"
+              >
+                <span>{t.boreTitle}</span>
+                {showAdvanced ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              </button>
+              {showAdvanced && (
+                <div className="border-t border-white/10 p-4">
+                  {renderBoreCard(true)}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -683,18 +694,16 @@ export const NetworkPage: React.FC<Props> = ({
         <div className="glass-card rounded-2xl p-5">
           <h3 className="flex items-center gap-2 font-semibold text-white">
             <Router className="h-4 w-4 text-cyan-400" />
-            Modem Otomatik Port Acma (UPnP)
+            {t.upnpTitle}
           </h3>
-          <p className="mt-1.5 text-xs text-slate-400">
-            CGNAT arkasinda degilsen ve modeminde UPnP aciksa, aktif sunucunun portlarini tek tikla disa acar.
-          </p>
+          <p className="mt-1.5 text-xs text-slate-400">{t.upnpDesc}</p>
           <button
             disabled={busyUpnp || !server}
             onClick={mapPortsUpnp}
             className="mt-4 flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-40"
           >
             {busyUpnp && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Portlari UPnP ile Ac
+            {t.upnpMapBtn}
           </button>
         </div>
 
@@ -702,25 +711,23 @@ export const NetworkPage: React.FC<Props> = ({
           <div className="flex items-center justify-between">
             <h3 className="flex items-center gap-2 font-semibold text-white">
               <Smartphone className="h-4 w-4 text-violet-400" />
-              Android / Uzaktan Kontrol (Companion)
+              {t.companionTitle}
             </h3>
             <button
               onClick={toggleRemoteAccess}
               className={`rounded-xl px-3 py-1 text-xs font-semibold ${config?.remoteEnabled ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-700/50 text-slate-300'}`}
             >
-              {config?.remoteEnabled ? 'Acik' : 'Kapali'}
+              {config?.remoteEnabled ? t.companionOn : t.companionOff}
             </button>
           </div>
-          <p className="mt-1.5 text-xs text-slate-400">
-            Telefonundaki MC SekaiLink uygulamasindan bu bilgisayardaki sunucuyu guvenli sekilde yonet.
-          </p>
+          <p className="mt-1.5 text-xs text-slate-400">{t.companionDesc}</p>
           <div className="mt-3 space-y-2 rounded-xl border border-white/10 bg-slate-950/70 p-3 text-xs">
             <div className="flex justify-between">
-              <span className="text-slate-400">Panel URL:</span>
+              <span className="text-slate-400">{t.panelUrlLabel}</span>
               <code className="text-cyan-300">{pairingUrl}</code>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-slate-400">Eslestirme Token:</span>
+              <span className="text-slate-400">{t.pairingTokenLabel}</span>
               <div className="flex items-center gap-1.5">
                 <code className="font-mono text-emerald-300">{config?.pairingToken || '...'}</code>
                 <button
@@ -736,15 +743,15 @@ export const NetworkPage: React.FC<Props> = ({
             <button
               onClick={() =>
                 setQrModal({
-                  title: 'Mobil Uzak Baglanti QR',
-                  subtitle: 'Android MC SekaiLink Uzak Baglanti sekmesinde kullan',
+                  title: t.qrPairTitle,
+                  subtitle: t.qrPairSub,
                   value: pairingPayload,
                 })
               }
               className="flex items-center gap-1.5 rounded-xl bg-violet-500/20 px-3 py-1.5 text-xs font-semibold text-violet-300 hover:bg-violet-500/30"
             >
               <QrCode className="h-3.5 w-3.5" />
-              QR ile Eslestir
+              {t.qrPairBtn}
             </button>
             <button
               onClick={async () => {
@@ -754,7 +761,7 @@ export const NetworkPage: React.FC<Props> = ({
               className="flex items-center gap-1.5 rounded-xl border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"
             >
               <ShieldCheck className="h-3.5 w-3.5" />
-              Token Yenile
+              {t.regenTokenBtn}
             </button>
           </div>
         </div>
@@ -766,6 +773,7 @@ export const NetworkPage: React.FC<Props> = ({
         title={qrModal?.title || ''}
         subtitle={qrModal?.subtitle || ''}
         value={qrModal?.value || ''}
+        lang={lang}
       />
     </div>
   );
@@ -796,21 +804,24 @@ const CopyBox: React.FC<{
   label: string;
   value: string;
   copied: boolean;
+  copyLabel: string;
+  copiedLabel: string;
+  qrTitle: string;
   onCopy: () => void;
   onQr: () => void;
-}> = ({ label, value, copied, onCopy, onQr }) => (
+}> = ({ label, value, copied, copyLabel, copiedLabel, qrTitle, onCopy, onQr }) => (
   <div className="flex items-center justify-between gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3">
     <div className="min-w-0">
       <div className="text-[10px] uppercase tracking-wider text-emerald-300">{label}</div>
       <div className="mt-0.5 truncate font-mono text-sm font-bold text-white">{value}</div>
     </div>
     <div className="flex shrink-0 items-center gap-1.5">
-      <button onClick={onQr} className="rounded-xl bg-white/10 p-2 text-slate-200 hover:bg-white/20" title="QR Kod">
+      <button onClick={onQr} className="rounded-xl bg-white/10 p-2 text-slate-200 hover:bg-white/20" title={qrTitle}>
         <QrCode className="h-4 w-4" />
       </button>
       <button onClick={onCopy} className="flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 hover:brightness-110">
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-        {copied ? 'Kopyalandi' : 'Kopyala'}
+        {copied ? copiedLabel : copyLabel}
       </button>
     </div>
   </div>

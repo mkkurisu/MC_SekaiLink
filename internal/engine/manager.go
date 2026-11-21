@@ -592,6 +592,73 @@ func (m *Manager) SendCommand(id, command string) error {
 	return err
 }
 
+// ApplyLiveProperties pushes changes to settings that Minecraft servers support at runtime
+// (gamemode, difficulty, whitelist, Bedrock pvp) when the server is currently running.
+func (m *Manager) ApplyLiveProperties(id string, prevProps, nextProps map[string]string) []string {
+	if !m.IsRunning(id) {
+		return nil
+	}
+	inst, err := m.store.GetInstance(id)
+	if err != nil {
+		return nil
+	}
+	cmds, applied := buildLivePropertyCommands(inst.Engine, prevProps, nextProps)
+	for _, cmd := range cmds {
+		_ = m.SendCommand(id, cmd)
+	}
+	return applied
+}
+
+func buildLivePropertyCommands(eng models.EngineType, prevProps, nextProps map[string]string) ([]string, []string) {
+	var cmds []string
+	var applied []string
+
+	gm := strings.ToLower(strings.TrimSpace(nextProps["gamemode"]))
+	prevGM := strings.ToLower(strings.TrimSpace(prevProps["gamemode"]))
+	if gm != "" && gm != prevGM {
+		switch gm {
+		case "survival", "creative", "adventure", "spectator":
+			cmds = append(cmds, "defaultgamemode "+gm, "gamemode "+gm+" @a")
+			applied = append(applied, "gamemode")
+		}
+	}
+
+	diff := strings.ToLower(strings.TrimSpace(nextProps["difficulty"]))
+	prevDiff := strings.ToLower(strings.TrimSpace(prevProps["difficulty"]))
+	if diff != "" && diff != prevDiff {
+		switch diff {
+		case "peaceful", "easy", "normal", "hard":
+			cmds = append(cmds, "difficulty "+diff)
+			applied = append(applied, "difficulty")
+		}
+	}
+
+	wl := strings.ToLower(strings.TrimSpace(nextProps["white-list"]))
+	prevWL := strings.ToLower(strings.TrimSpace(prevProps["white-list"]))
+	if (wl == "true" || wl == "false") && wl != prevWL {
+		if eng == models.EngineBDS {
+			cmds = append(cmds, "allowlist reload")
+			applied = append(applied, "white-list")
+		} else if eng != models.EnginePowerNukkitX {
+			if wl == "true" {
+				cmds = append(cmds, "whitelist on")
+			} else {
+				cmds = append(cmds, "whitelist off")
+			}
+			applied = append(applied, "white-list")
+		}
+	}
+
+	pvp := strings.ToLower(strings.TrimSpace(nextProps["pvp"]))
+	prevPvp := strings.ToLower(strings.TrimSpace(prevProps["pvp"]))
+	if eng == models.EngineBDS && (pvp == "true" || pvp == "false") && pvp != prevPvp {
+		cmds = append(cmds, "gamerule pvp "+pvp)
+		applied = append(applied, "pvp")
+	}
+
+	return cmds, applied
+}
+
 func (m *Manager) Stop(id string) error {
 	m.mu.Lock()
 	proc, ok := m.procs[id]

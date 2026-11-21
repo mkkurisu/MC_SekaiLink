@@ -1,12 +1,15 @@
 import React, { useState } from 'react';
 import { CheckCircle2, Laptop, Link2, Smartphone, Wifi } from 'lucide-react';
 import { getRemoteConnection, setRemoteConnection } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 
 interface Props {
+  lang: Lang;
   onReconnect: () => void;
 }
 
-export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
+export const RemoteConnectPage: React.FC<Props> = ({ lang, onReconnect }) => {
+  const t = translations[lang].remote;
   const initial = getRemoteConnection();
   const [enabled, setEnabled] = useState(initial.enabled);
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl || 'http://192.168.1.100:25580');
@@ -24,19 +27,19 @@ export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
           headers: { 'X-Sekai-Token': token.trim() },
         });
         if (!res.ok) {
-          throw new Error(`Baglanti reddedildi (HTTP ${res.status}). URL ve Token'i kontrol edin.`);
+          throw new Error(`${t.connectRejected} ${res.status}${t.connectRejectedSuffix}`);
         }
         setRemoteConnection({ enabled: true, baseUrl: cleanUrl, token: token.trim() });
         setEnabled(true);
-        setStatus('Uzak PC/Linux MC SekaiLink sunucusuna baglanildi!');
+        setStatus(t.connectedMsg);
       } else {
         setRemoteConnection({ enabled: false, baseUrl, token });
         setEnabled(false);
-        setStatus('Yerel cihaz moduna gecildi.');
+        setStatus(t.localSwitchedMsg);
       }
       onReconnect();
     } catch (e: unknown) {
-      setStatus(e instanceof Error ? e.message : 'Baglanti hatasi');
+      setStatus(e instanceof Error ? e.message : t.connectError);
     } finally {
       setTesting(false);
     }
@@ -50,10 +53,8 @@ export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
             <Link2 className="h-6 w-6" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white">Mod Secimi: Yerel Cihaz &harr; Uzak Sunucu</h2>
-            <p className="text-xs text-slate-400">
-              Ister bu cihazda sunucu barindir, ister baska bir PC / Linux makinedeki MC SekaiLink&apos;i kontrol et.
-            </p>
+            <h2 className="text-lg font-bold text-white">{t.title}</h2>
+            <p className="text-xs text-slate-400">{t.subtitle}</p>
           </div>
         </div>
 
@@ -63,20 +64,20 @@ export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
             className={`flex flex-col items-center gap-2 rounded-2xl border p-4 text-center transition ${!enabled ? 'border-emerald-500/50 bg-emerald-500/15 text-white' : 'border-white/10 bg-slate-900/50 text-slate-400'}`}
           >
             <Smartphone className="h-6 w-6 text-emerald-400" />
-            <span className="text-xs font-semibold">Bu Cihaz (Yerel)</span>
+            <span className="text-xs font-semibold">{t.localMode}</span>
           </button>
           <button
             onClick={() => setEnabled(true)}
             className={`flex flex-col items-center gap-2 rounded-2xl border p-4 text-center transition ${enabled ? 'border-violet-500/50 bg-violet-500/15 text-white' : 'border-white/10 bg-slate-900/50 text-slate-400'}`}
           >
             <Laptop className="h-6 w-6 text-violet-400" />
-            <span className="text-xs font-semibold">Uzak PC / Linux</span>
+            <span className="text-xs font-semibold">{t.remoteMode}</span>
           </button>
         </div>
 
         <div className="mt-5 space-y-3">
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Uzak MC SekaiLink Adresi</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.remoteUrlLabel}</label>
             <input
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
@@ -85,7 +86,7 @@ export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Eslestirme Tokeni (Pairing Token)</label>
+            <label className="mb-1 block text-xs text-slate-400">{t.tokenLabel}</label>
             <input
               value={token}
               onChange={(e) => setToken(e.target.value)}
@@ -100,7 +101,7 @@ export const RemoteConnectPage: React.FC<Props> = ({ onReconnect }) => {
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-violet-500 to-cyan-500 py-3 text-sm font-semibold text-slate-950 hover:brightness-110 disabled:opacity-50"
           >
             <Wifi className="h-4 w-4" />
-            {testing ? 'Baglanti Test Ediliyor...' : 'Uzak Sunucuya Baglan'}
+            {testing ? t.testingBtn : t.connectBtn}
           </button>
         </div>
 

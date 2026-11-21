@@ -281,7 +281,10 @@ func (pm *PlayitManager) Start() error {
 	}
 
 	// Linux / Android: launch playitd with --secret-path and --socket-path, then attach playit-cli --stdout.
-	sockPath := filepath.Join(os.TempDir(), "sekailink-playit.sock")
+	sockPath := filepath.Join(pm.dataDir, "playit.sock")
+	if len(sockPath) > 96 {
+		sockPath = filepath.Join(os.TempDir(), "sekailink-playit.sock")
+	}
 	_ = os.Remove(sockPath)
 	secretPath := filepath.Join(pm.dataDir, "playit.toml")
 

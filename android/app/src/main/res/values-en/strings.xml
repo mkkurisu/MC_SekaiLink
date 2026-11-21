@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MC SekaiLink</string>
+    <string name="service_notification_title">MC SekaiLink Active</string>
+    <string name="service_notification_text">Local server core is running in the background</string>
+    <string name="action_stop">Stop</string>
+</resources>

@@ -132,8 +132,15 @@ object JreManager {
                         val asset = assets.getJSONObject(j)
                         val name = asset.optString("name").lowercase()
                         val matchesArch = name.contains("arm64") || name.contains("aarch64")
+                        val isOtherPlatform = name.contains("ios") ||
+                            name.contains("macos") ||
+                            name.contains("darwin") ||
+                            name.contains("windows") ||
+                            name.contains("x86") ||
+                            name.contains("arm32") ||
+                            name.contains("armeabi")
                         val matchesExt = name.endsWith(".tar.xz") || name.endsWith(".tar.gz") || name.endsWith(".tgz") || name.endsWith(".zip")
-                        if (name.contains(preferredTag) && matchesArch && matchesExt) {
+                        if (name.contains(preferredTag) && matchesArch && !isOtherPlatform && matchesExt) {
                             return Pair(asset.optString("name"), asset.optString("browser_download_url"))
                         }
                     }

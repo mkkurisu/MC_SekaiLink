@@ -230,6 +230,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Sekai-Token")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Sekai-Live-Applied")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -624,6 +625,7 @@ func (s *Server) handleUpdateProperties(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	prevProps, _ := engine.ReadProperties(inst.Path)
 	if err := engine.WriteProperties(inst.Path, props); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -645,6 +647,20 @@ func (s *Server) handleUpdateProperties(w http.ResponseWriter, r *http.Request) 
 	if changed {
 		_ = s.store.SaveInstance(inst)
 		_ = engine.SyncOfflineMode(inst)
+	}
+	liveApplied := s.manager.ApplyLiveProperties(inst.ID, prevProps, props)
+	if len(liveApplied) > 0 {
+		w.Header().Set("X-Sekai-Live-Applied", strings.Join(liveApplied, ","))
+	}
+	if r.URL.Query().Get("withMeta") == "true" {
+		if liveApplied == nil {
+			liveApplied = []string{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"properties":  props,
+			"liveApplied": liveApplied,
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, props)
 }

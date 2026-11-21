@@ -73,6 +73,7 @@ class ServerForegroundService : Service() {
 
         val dataDir = File(filesDir, "sekailink").apply { mkdirs() }
         val tmpDir = File(cacheDir, "tmp").apply { mkdirs() }
+        val logFile = File(cacheDir, "core.log")
         val jreDir = File(filesDir, "jre")
 
         val cmd = listOf(
@@ -85,12 +86,14 @@ class ServerForegroundService : Service() {
         val pb = ProcessBuilder(cmd)
         pb.directory(dataDir)
         pb.redirectErrorStream(true)
+        pb.redirectOutput(ProcessBuilder.Redirect.to(logFile))
         val env = pb.environment()
         env["SEKAILINK_PLATFORM"] = "android"
         env["SEKAILINK_DATA_DIR"] = dataDir.absolutePath
         env["SEKAILINK_NATIVE_LIB_DIR"] = nativeDir
         env["SEKAILINK_JAVA_HOME"] = jreDir.absolutePath
         env["SEKAILINK_DNS_SERVERS"] = detectDnsServers()
+        env["QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING"] = "true"
         env["HOME"] = filesDir.absolutePath
         env["TMPDIR"] = tmpDir.absolutePath
 
@@ -188,7 +191,7 @@ class ServerForegroundService : Service() {
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(openIntent)
             .setOngoing(true)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Durdur", stopIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, getString(R.string.action_stop), stopIntent)
             .build()
     }
 }

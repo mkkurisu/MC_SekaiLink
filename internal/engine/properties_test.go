@@ -144,3 +144,43 @@ func TestOptimizeLowLagPropertiesAndTurkishTPS(t *testing.T) {
 		t.Fatalf("expected tuned low-RAM G1 flags, got %s", lowArgs)
 	}
 }
+
+func TestBuildLivePropertyCommands(t *testing.T) {
+	prev := map[string]string{
+		"gamemode":   "survival",
+		"difficulty": "normal",
+		"white-list": "false",
+		"pvp":        "true",
+	}
+	next := map[string]string{
+		"gamemode":   "creative",
+		"difficulty": "hard",
+		"white-list": "true",
+		"pvp":        "false",
+	}
+
+	cmds, applied := buildLivePropertyCommands(models.EnginePaper, prev, next)
+	wantCmds := []string{"defaultgamemode creative", "gamemode creative @a", "difficulty hard", "whitelist on"}
+	if len(cmds) != len(wantCmds) {
+		t.Fatalf("unexpected Java live cmds %v, want %v", cmds, wantCmds)
+	}
+	for i := range wantCmds {
+		if cmds[i] != wantCmds[i] {
+			t.Fatalf("cmd[%d] = %q, want %q", i, cmds[i], wantCmds[i])
+		}
+	}
+	if len(applied) != 3 {
+		t.Fatalf("expected 3 Java applied keys, got %v", applied)
+	}
+
+	bdsCmds, bdsApplied := buildLivePropertyCommands(models.EngineBDS, prev, next)
+	wantBDS := []string{"defaultgamemode creative", "gamemode creative @a", "difficulty hard", "allowlist reload", "gamerule pvp false"}
+	if len(bdsCmds) != len(wantBDS) || len(bdsApplied) != 4 {
+		t.Fatalf("unexpected BDS live cmds=%v applied=%v", bdsCmds, bdsApplied)
+	}
+
+	noCmds, noApplied := buildLivePropertyCommands(models.EnginePaper, prev, prev)
+	if len(noCmds) != 0 || len(noApplied) != 0 {
+		t.Fatalf("expected no-op for unchanged properties, got cmds=%v applied=%v", noCmds, noApplied)
+	}
+}

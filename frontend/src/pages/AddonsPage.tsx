@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Loader2, Package, Power, Search, Trash2, Upload } from 'lucide-react';
 import { apiFetch, formatBytes } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 import { InstalledAddon, ModrinthHit, ModrinthSearchResult, ServerInstance } from '../types';
 
 interface Props {
   server: ServerInstance | null;
+  lang: Lang;
 }
 
-export const AddonsPage: React.FC<Props> = ({ server }) => {
+export const AddonsPage: React.FC<Props> = ({ server, lang }) => {
+  const t = translations[lang].addons;
   const [tab, setTab] = useState<'store' | 'installed'>('store');
   const [projectType, setProjectType] = useState<'mod' | 'plugin' | 'datapack'>('plugin');
   const [query, setQuery] = useState('');
@@ -65,7 +68,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
       const res = await apiFetch<ModrinthSearchResult>(`/api/modrinth/search?${params.toString()}`);
       setResults(res.hits || []);
     } catch (e: unknown) {
-      setBanner(e instanceof Error ? e.message : 'Arama hatasi');
+      setBanner(e instanceof Error ? e.message : t.searchErr);
     } finally {
       setSearching(false);
     }
@@ -80,10 +83,10 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
         method: 'POST',
         body: JSON.stringify({ projectId: hit.project_id, kind: projectType }),
       });
-      setBanner(`Kuruldu: ${(res.installed || []).join(', ')}`);
+      setBanner(`${t.installedMsg} ${(res.installed || []).join(', ')}`);
       await loadInstalled();
     } catch (e: unknown) {
-      setBanner(`Hata: ${e instanceof Error ? e.message : 'kurulum basarisiz'}`);
+      setBanner(`${t.errorPrefix} ${e instanceof Error ? e.message : t.installFailed}`);
     } finally {
       setInstallingId('');
     }
@@ -101,11 +104,11 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
         method: 'POST',
         body: fd,
       });
-      setBanner(`Yuklendi: ${res.installed}`);
+      setBanner(`${t.uploadedMsg} ${res.installed}`);
       await loadInstalled();
       setTab('installed');
     } catch (e: unknown) {
-      setBanner(`Yukleme hatasi: ${e instanceof Error ? e.message : 'basarisiz'}`);
+      setBanner(`${t.uploadErrorPrefix} ${e instanceof Error ? e.message : t.uploadFailed}`);
     } finally {
       setUploading(false);
     }
@@ -127,7 +130,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
   };
 
   if (!server) {
-    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">Once bir sunucu secin.</div>;
+    return <div className="glass-card rounded-2xl p-8 text-center text-sm text-slate-400">{t.selectServerFirst}</div>;
   }
 
   return (
@@ -138,7 +141,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
             onClick={() => setTab('store')}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === 'store' ? 'bg-emerald-500 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}
           >
-            Modrinth Magazasi
+            {t.storeTab}
           </button>
           <button
             onClick={() => {
@@ -147,13 +150,13 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
             }}
             className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${tab === 'installed' ? 'bg-emerald-500 text-slate-950' : 'bg-white/5 text-slate-300 hover:bg-white/10'}`}
           >
-            Kurulu Olanlar ({installed.length})
+            {t.installedTab} ({installed.length})
           </button>
         </div>
 
         <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20">
           {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-          <span>.jar / .mcpack / .mcaddon Yukle</span>
+          <span>{t.uploadBtn}</span>
           <input
             type="file"
             className="hidden"
@@ -180,9 +183,9 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                 <button
                   key={k}
                   onClick={() => setProjectType(k)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold capitalize ${projectType === k ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-white'}`}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${projectType === k ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-white'}`}
                 >
-                  {k === 'plugin' ? 'Eklenti (Plugin)' : k === 'mod' ? 'Mod' : 'Datapack'}
+                  {k === 'plugin' ? t.typePlugin : k === 'mod' ? t.typeMod : t.typeDatapack}
                 </button>
               ))}
             </div>
@@ -193,7 +196,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && runSearch(query)}
-                  placeholder="Ornek: EssentialsX, LuckPerms, Lithium, Terralith..."
+                  placeholder={t.searchPlaceholder}
                   className="w-full rounded-xl border border-white/10 bg-slate-950/80 py-2 pl-9 pr-4 text-sm text-white outline-none focus:border-emerald-500"
                 />
               </div>
@@ -201,7 +204,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                 onClick={() => runSearch(query)}
                 className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:brightness-110"
               >
-                Ara
+                {t.searchBtn}
               </button>
             </div>
           </div>
@@ -209,7 +212,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
           {searching ? (
             <div className="flex items-center justify-center py-16 text-slate-400">
               <Loader2 className="mr-2 h-5 w-5 animate-spin text-emerald-400" />
-              Modrinth araniyor...
+              {t.searching}
             </div>
           ) : (
             <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
@@ -225,7 +228,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                     )}
                     <div className="min-w-0 flex-1">
                       <h3 className="truncate font-semibold text-white">{hit.title}</h3>
-                      <div className="text-[11px] text-slate-400">{hit.author} • {hit.downloads.toLocaleString()} indirme</div>
+                      <div className="text-[11px] text-slate-400">{hit.author} • {hit.downloads.toLocaleString()} {t.downloadsLabel}</div>
                       <p className="mt-1.5 line-clamp-2 text-xs text-slate-400">{hit.description}</p>
                     </div>
                   </div>
@@ -235,7 +238,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                     className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-500/20 py-2 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/30 disabled:opacity-50"
                   >
                     {installingId === hit.project_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                    Tek Tikla Kur
+                    {t.installBtn}
                   </button>
                 </div>
               ))}
@@ -245,7 +248,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
       ) : (
         <div className="glass-card overflow-hidden rounded-2xl">
           {installed.length === 0 ? (
-            <div className="p-10 text-center text-sm text-slate-400">Henuz kurulu mod, eklenti veya Bedrock paketi yok.</div>
+            <div className="p-10 text-center text-sm text-slate-400">{t.emptyInstalled}</div>
           ) : (
             <div className="divide-y divide-white/5">
               {installed.map((item) => (
@@ -264,7 +267,7 @@ export const AddonsPage: React.FC<Props> = ({ server }) => {
                         className={`flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-medium ${item.enabled ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-700/50 text-slate-300'}`}
                       >
                         <Power className="h-3.5 w-3.5" />
-                        {item.enabled ? 'Aktif' : 'Kapali'}
+                        {item.enabled ? t.active : t.disabled}
                       </button>
                     )}
                     <button

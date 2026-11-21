@@ -79,11 +79,16 @@ export function App() {
 
   useEffect(() => {
     loadAll();
+    const onJreUpdated = () => loadAll();
+    window.addEventListener('sekai-jre-updated', onJreUpdated);
     const timer = setInterval(() => {
       apiFetch<ServerInstance[]>('/api/servers').then((s) => setServers(s || [])).catch(() => {});
       refreshTunnels();
     }, 3500);
-    return () => clearInterval(timer);
+    return () => {
+      window.removeEventListener('sekai-jre-updated', onJreUpdated);
+      clearInterval(timer);
+    };
   }, []);
 
   const t = translations[lang];
@@ -122,7 +127,7 @@ export function App() {
           </div>
           <div>
             <div className="portal-gradient-text text-base font-extrabold tracking-tight">{t.appName}</div>
-            <div className="text-[10px] text-slate-400">{isRemote ? 'Remote Companion' : t.tagline}</div>
+            <div className="text-[10px] text-slate-400">{isRemote ? t.common.remoteCompanion : t.tagline}</div>
           </div>
         </div>
 
@@ -135,7 +140,7 @@ export function App() {
               className="flex-1 truncate rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 text-xs font-medium text-white outline-none focus:border-emerald-500"
             >
               {servers.length === 0 ? (
-                <option value="">Sunucu yok</option>
+                <option value="">{t.common.noServers}</option>
               ) : (
                 servers.map((s) => (
                   <option key={s.id} value={s.id}>
@@ -240,10 +245,10 @@ export function App() {
                   onNavigate={setTab}
                 />
               )}
-              {tab === 'console' && <ConsolePage server={activeServer} />}
-              {tab === 'addons' && <AddonsPage server={activeServer} />}
-              {tab === 'packs' && <PacksShadersPage server={activeServer} />}
-              {tab === 'worlds' && <WorldsPage server={activeServer} onRefresh={loadAll} />}
+              {tab === 'console' && <ConsolePage server={activeServer} lang={lang} />}
+              {tab === 'addons' && <AddonsPage server={activeServer} lang={lang} />}
+              {tab === 'packs' && <PacksShadersPage server={activeServer} lang={lang} />}
+              {tab === 'worlds' && <WorldsPage server={activeServer} lang={lang} onRefresh={loadAll} />}
               {tab === 'network' && (
                 <NetworkPage
                   server={activeServer}
@@ -253,14 +258,15 @@ export function App() {
                   bore={bore}
                   e4mc={e4mc}
                   relay={relay}
+                  lang={lang}
                   onRefreshTunnel={refreshTunnels}
                   onRefreshConfig={() => apiFetch<AppConfig>('/api/config').then(setConfig).catch(() => {})}
                 />
               )}
               {tab === 'settings' && (
-                <SettingsPage server={activeServer} system={system} onRefresh={loadAll} onDeleted={loadAll} />
+                <SettingsPage server={activeServer} system={system} lang={lang} onRefresh={loadAll} onDeleted={loadAll} />
               )}
-              {tab === 'remote' && <RemoteConnectPage onReconnect={loadAll} />}
+              {tab === 'remote' && <RemoteConnectPage lang={lang} onReconnect={loadAll} />}
             </motion.div>
           </AnimatePresence>
         </main>
@@ -286,7 +292,7 @@ export function App() {
             className={`flex flex-col items-center gap-0.5 rounded-xl px-2 py-1 text-[10px] ${tab === 'settings' || tab === 'remote' ? 'text-emerald-400' : 'text-slate-400'}`}
           >
             <Settings className="h-4 w-4" />
-            <span>Diger</span>
+            <span>{t.common.more}</span>
           </button>
         </nav>
       </div>

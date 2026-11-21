@@ -209,3 +209,23 @@ func TestE4mcManagerQUICForwarding(t *testing.T) {
 		t.Fatalf("QUIC echo mismatch: got %q, want %q", string(got), want)
 	}
 }
+
+func TestBuildE4mcRelayCandidates(t *testing.T) {
+	euCands := buildE4mcRelayCandidates(e4mcRelayInfo{ID: "uk", Host: "uk.e4mc.link", Port: 25575})
+	if len(euCands) != 3 {
+		t.Fatalf("expected 3 EU candidates (uk, de, eu), got %+v", euCands)
+	}
+	if euCands[0].Host != "uk.e4mc.link" || euCands[1].Host != "de.e4mc.link" || euCands[2].Host != "eu.e4mc.link" {
+		t.Fatalf("unexpected EU candidate order: %+v", euCands)
+	}
+
+	deCands := buildE4mcRelayCandidates(e4mcRelayInfo{ID: "de", Host: "de.e4mc.link", Port: 25575})
+	if len(deCands) != 2 {
+		t.Fatalf("expected deduplicated 2 candidates when broker returns de, got %+v", deCands)
+	}
+
+	naCands := buildE4mcRelayCandidates(e4mcRelayInfo{ID: "na", Host: "na.e4mc.link", Port: 25575})
+	if len(naCands) != 1 || naCands[0].Host != "na.e4mc.link" {
+		t.Fatalf("expected only [na.e4mc.link] for non-EU region, got %+v", naCands)
+	}
+}

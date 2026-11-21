@@ -44,8 +44,16 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 		defer wg.Done()
 		relay, err := fetchE4mcRelay(defaultE4mcBrokerURL)
 		if err == nil {
-			e4mcRegion = strings.ToUpper(strings.TrimSpace(relay.ID))
-			e4mcPing = probeTCPPing(ctx, net.JoinHostPort(relay.Host, "25565"))
+			probed := probeE4mcCandidates(ctx, buildE4mcRelayCandidates(relay), 1500*time.Millisecond)
+			for _, p := range probed {
+				if p.rttMs > 0 && (e4mcPing == 0 || p.rttMs < e4mcPing) {
+					e4mcPing = p.rttMs
+					e4mcRegion = strings.ToUpper(strings.TrimSpace(p.relay.ID))
+				}
+			}
+			if e4mcRegion == "" {
+				e4mcRegion = strings.ToUpper(strings.TrimSpace(relay.ID))
+			}
 		}
 		if e4mcPing <= 0 {
 			e4mcPing = probeTCPPing(ctx, "broker.e4mc.link:443")

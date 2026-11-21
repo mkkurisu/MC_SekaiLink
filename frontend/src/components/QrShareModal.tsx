@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { Check, Copy, QrCode, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { copyTextSafe } from '../lib/api';
+import { Lang, translations } from '../lib/i18n';
 
 interface Props {
   open: boolean;
@@ -9,13 +11,15 @@ interface Props {
   title: string;
   subtitle?: string;
   value: string;
+  lang?: Lang;
 }
 
-export const QrShareModal: React.FC<Props> = ({ open, onClose, title, subtitle, value }) => {
+export const QrShareModal: React.FC<Props> = ({ open, onClose, title, subtitle, value, lang = 'tr' }) => {
   const [copied, setCopied] = useState(false);
+  const t = translations[lang].qrModal;
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(value);
+    await copyTextSafe(value);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
   };
@@ -57,7 +61,7 @@ export const QrShareModal: React.FC<Props> = ({ open, onClose, title, subtitle, 
                 className="flex shrink-0 items-center gap-1 rounded-lg bg-emerald-500/20 px-2.5 py-1 text-xs font-medium text-emerald-300 hover:bg-emerald-500/30"
               >
                 {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? 'Kopyalandi' : 'Kopyala'}
+                {copied ? t.copied : t.copy}
               </button>
             </div>
           </motion.div>
