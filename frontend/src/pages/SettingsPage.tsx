@@ -107,7 +107,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
     setMsg('');
     try {
       await apiFetch('/api/system/install-java', { method: 'POST' });
-      setMsg('Eclipse Temurin Java 21 JRE basariyla kuruldu!');
+      setMsg('Eclipse Temurin Java 25 JRE basariyla kuruldu!');
       onRefresh();
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : 'Java kurulumu basarisiz');
@@ -156,7 +156,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               className="flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/15 px-3.5 py-2 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/25"
             >
               {installingJava ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-              Otomatik Java 21 Kur
+              Otomatik Java 25 Kur
             </button>
             <button
               disabled={saving}

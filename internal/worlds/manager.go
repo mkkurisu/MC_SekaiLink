@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +14,13 @@ import (
 	"github.com/MC_SekaiLink/mc-sekailink/internal/engine"
 	"github.com/MC_SekaiLink/mc-sekailink/internal/models"
 )
+
+var backupTimestampSuffixRe = regexp.MustCompile(`_[0-9]{8}_[0-9]{6}$`)
+
+func extractBackupWorldName(filename string) string {
+	base := strings.TrimSuffix(filepath.Base(filename), ".zip")
+	return backupTimestampSuffixRe.ReplaceAllString(base, "")
+}
 
 func ListWorlds(inst models.ServerInstance) ([]models.WorldInfo, error) {
 	props, _ := engine.ReadProperties(inst.Path)
@@ -199,10 +207,7 @@ func ListBackups(inst models.ServerInstance) ([]models.BackupInfo, error) {
 			size = info.Size()
 			created = info.ModTime()
 		}
-		worldName := strings.TrimSuffix(e.Name(), ".zip")
-		if idx := strings.LastIndex(worldName, "_20"); idx > 0 {
-			worldName = worldName[:idx]
-		}
+		worldName := extractBackupWorldName(e.Name())
 		out = append(out, models.BackupInfo{
 			Filename:  e.Name(),
 			WorldName: worldName,
@@ -253,11 +258,7 @@ func RestoreBackup(inst models.ServerInstance, backupFilename string) error {
 	if _, err := os.Stat(backupPath); err != nil {
 		return fmt.Errorf("yedek dosyasi bulunamadi")
 	}
-	worldName := strings.TrimSuffix(cleanName, ".zip")
-	if idx := strings.LastIndex(worldName, "_20"); idx > 0 {
-		worldName = worldName[:idx]
-	}
-	worldName = sanitizeWorldName(worldName)
+	worldName := sanitizeWorldName(extractBackupWorldName(cleanName))
 	if worldName == "" {
 		worldName = "world"
 	}

@@ -318,8 +318,13 @@ func (m *Manager) Start(id string) error {
 		}
 		if waitErr != nil && !wasStopping {
 			latest.Status = models.StatusError
-			latest.LastError = waitErr.Error()
-			m.appendConsole(id, "ERROR", fmt.Sprintf("[MC SekaiLink] Sunucu beklenmedik sekilde kapandi: %v", waitErr))
+			errReason := extractCrashSummary(cs)
+			if errReason != "" {
+				latest.LastError = fmt.Sprintf("%s (%v)", errReason, waitErr)
+			} else {
+				latest.LastError = waitErr.Error()
+			}
+			m.appendConsole(id, "ERROR", fmt.Sprintf("[MC SekaiLink] Sunucu beklenmedik sekilde kapandi: %s", latest.LastError))
 		} else {
 			latest.Status = models.StatusOffline
 			m.appendConsole(id, "INFO", "[MC SekaiLink] Sunucu durduruldu.")
@@ -355,12 +360,15 @@ func (m *Manager) buildStartCommand(inst models.ServerInstance) (*exec.Cmd, erro
 	}
 
 	cfg := m.store.GetConfig()
-	javaInfo := DetectJava(firstNonEmpty(inst.JavaPath, cfg.JavaPath), m.store.DataDir())
+	javaInfo, reqMajor, sufficient := DetectJavaForMCVersion(inst.MCVersion, firstNonEmpty(inst.JavaPath, cfg.JavaPath), m.store.DataDir())
 	if !javaInfo.Detected {
-		return nil, fmt.Errorf("Java 21 bulunamadi! Ayarlardan Java yolunu secin veya otomatik Java kurun")
+		return nil, fmt.Errorf("Java bulunamadi! Ayarlardan 'Otomatik Java 25 Kur' butonuna tiklayin")
+	}
+	if !sufficient {
+		return nil, fmt.Errorf("Minecraft %s icin Java %d+ gerekli (bulunan: Java %d). Ayarlardan 'Otomatik Java 25 Kur' butonuna tiklayin", inst.MCVersion, reqMajor, javaInfo.Major)
 	}
 
-	args := buildJVMArgs(inst.MemoryMB, inst.JVMPreset)
+	args := buildJVMArgs(inst.MemoryMB, inst.JVMPreset, javaInfo.Major)
 
 	if inst.Engine == models.EngineNeoForge {
 		argsFile := findNeoForgeArgsFile(inst.Path)
@@ -381,7 +389,7 @@ func (m *Manager) buildStartCommand(inst models.ServerInstance) (*exec.Cmd, erro
 	return exec.Command(javaInfo.Path, args...), nil
 }
 
-func buildJVMArgs(memoryMB int, preset models.JVMPreset) []string {
+func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string {
 	if memoryMB < 512 {
 		memoryMB = 512
 	}
@@ -417,14 +425,40 @@ func buildJVMArgs(memoryMB int, preset models.JVMPreset) []string {
 			"-XX:MaxTenuringThreshold=1",
 		)
 	case models.JVMZGC:
-		return append(base,
-			"-XX:+UseZGC",
-			"-XX:+ZGenerational",
-			"-XX:+AlwaysPreTouch",
-		)
+		zgcArgs := []string{"-XX:+UseZGC"}
+		if javaMajor > 0 && javaMajor < 24 {
+			zgcArgs = append(zgcArgs, "-XX:+ZGenerational")
+		}
+		zgcArgs = append(zgcArgs, "-XX:+AlwaysPreTouch")
+		return append(base, zgcArgs...)
 	default:
 		return base
 	}
+}
+
+func extractCrashSummary(cs *consoleState) string {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	var fallback string
+	for i := len(cs.lines) - 1; i >= 0; i-- {
+		txt := strings.TrimSpace(cs.lines[i].Text)
+		if txt == "" || strings.HasPrefix(txt, "[MC SekaiLink]") {
+			continue
+		}
+		if fallback == "" {
+			fallback = txt
+		}
+		if cs.lines[i].Level == "ERROR" || strings.Contains(strings.ToLower(txt), "error") || strings.Contains(strings.ToLower(txt), "requires") {
+			if len(txt) > 220 {
+				return txt[:220] + "..."
+			}
+			return txt
+		}
+	}
+	if len(fallback) > 220 {
+		return fallback[:220] + "..."
+	}
+	return fallback
 }
 
 func findNeoForgeArgsFile(serverDir string) string {

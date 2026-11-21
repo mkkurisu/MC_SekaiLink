@@ -74,3 +74,12 @@ func TestWorldImportBackupRestore(t *testing.T) {
 		t.Fatalf("expected restored level.dat: %v", err)
 	}
 }
+
+func TestExtractBackupWorldNameAtHour20(t *testing.T) {
+	if got := extractBackupWorldName("adventure_20261121_200414.zip"); got != "adventure" {
+		t.Fatalf("got %q, want adventure", got)
+	}
+	if got := extractBackupWorldName("world_20_main_20261121_201500.zip"); got != "world_20_main" {
+		t.Fatalf("got %q, want world_20_main", got)
+	}
+}

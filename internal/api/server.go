@@ -297,7 +297,11 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInstallJava(w http.ResponseWriter, r *http.Request) {
-	info, err := engine.InstallManagedJRE(r.Context(), s.store.DataDir(), nil)
+	major := 25
+	if m, err := strconv.Atoi(r.URL.Query().Get("major")); err == nil && m >= 8 {
+		major = m
+	}
+	info, err := engine.InstallManagedJRE(r.Context(), s.store.DataDir(), major, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

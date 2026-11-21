@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -20,12 +22,106 @@ type JavaInfo struct {
 	Detected bool   `json:"detected"`
 	Path     string `json:"path"`
 	Version  string `json:"version"`
+	Major    int    `json:"major"`
 }
 
 var javaVersionRe = regexp.MustCompile(`version "([^"]+)"`)
 
-// DetectJava inspects common environment variables, bundled runtimes, and system directories for Java.
+// ParseJavaMajor extracts the major Java feature version (e.g. "25.0.1" -> 25, "1.8.0_402" -> 8).
+func ParseJavaMajor(version string) int {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		return 0
+	}
+	v = strings.TrimLeft(v, "v")
+	if idx := strings.IndexAny(v, "-_+"); idx > 0 {
+		v = v[:idx]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) == 0 {
+		return 0
+	}
+	p0, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0
+	}
+	if p0 == 1 && len(parts) > 1 {
+		if p1, err := strconv.Atoi(parts[1]); err == nil {
+			return p1
+		}
+	}
+	return p0
+}
+
+// RequiredJavaMajor returns the minimum Java major version required by a Minecraft release.
+func RequiredJavaMajor(mcVersion string) int {
+	base, _, _ := strings.Cut(strings.TrimSpace(mcVersion), "-")
+	if base == "" || strings.EqualFold(base, "latest") {
+		return 21
+	}
+	parts := strings.Split(base, ".")
+	p0, _ := strconv.Atoi(parts[0])
+	var p1, p2 int
+	if len(parts) > 1 {
+		p1, _ = strconv.Atoi(parts[1])
+	}
+	if len(parts) > 2 {
+		p2, _ = strconv.Atoi(parts[2])
+	}
+	if p0 >= 26 {
+		return 25
+	}
+	if p0 == 1 {
+		if p1 >= 21 || (p1 == 20 && p2 >= 5) {
+			return 21
+		}
+		if p1 >= 18 {
+			return 17
+		}
+		if p1 == 17 {
+			return 16
+		}
+	}
+	return 21
+}
+
+// DetectJava returns the highest-version Java runtime available on this machine.
 func DetectJava(preferredPath, dataDir string) JavaInfo {
+	all := DetectAllJavas(preferredPath, dataDir)
+	if len(all) == 0 {
+		return JavaInfo{}
+	}
+	return all[0]
+}
+
+// DetectJavaForMCVersion selects a Java runtime that meets the minimum version required by mcVersion.
+func DetectJavaForMCVersion(mcVersion, preferredPath, dataDir string) (JavaInfo, int, bool) {
+	req := RequiredJavaMajor(mcVersion)
+	all := DetectAllJavas(preferredPath, dataDir)
+	if len(all) == 0 {
+		return JavaInfo{}, req, false
+	}
+	cleanPref := ""
+	if preferredPath != "" {
+		cleanPref = filepath.Clean(preferredPath)
+	}
+	if cleanPref != "" {
+		for _, j := range all {
+			if strings.EqualFold(j.Path, cleanPref) && j.Major >= req {
+				return j, req, true
+			}
+		}
+	}
+	for _, j := range all {
+		if j.Major >= req {
+			return j, req, true
+		}
+	}
+	return all[0], req, false
+}
+
+// DetectAllJavas discovers all installed Java runtimes sorted from highest major version to lowest.
+func DetectAllJavas(preferredPath, dataDir string) []JavaInfo {
 	candidates := []string{}
 	if preferredPath != "" {
 		candidates = append(candidates, preferredPath)
@@ -34,6 +130,8 @@ func DetectJava(preferredPath, dataDir string) JavaInfo {
 		candidates = append(candidates, javaBinaryInHome(env))
 	}
 	if dataDir != "" {
+		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "jre25")))
+		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "jre21")))
 		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "jre")))
 		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "runtime", "jre")))
 	}
@@ -45,7 +143,11 @@ func DetectJava(preferredPath, dataDir string) JavaInfo {
 	}
 	if runtime.GOOS == "windows" {
 		for _, root := range []string{
+			`C:\Users\Kurisu\Tools\jre25`,
+			`C:\Users\Kurisu\Tools\jdk25`,
 			`C:\Users\Kurisu\Tools\jdk21`,
+			filepath.Join(os.Getenv("USERPROFILE"), "Tools", "jre25"),
+			filepath.Join(os.Getenv("USERPROFILE"), "Tools", "jdk25"),
 			filepath.Join(os.Getenv("USERPROFILE"), "Tools", "jdk21"),
 			`C:\Program Files\Eclipse Adoptium`,
 			`C:\Program Files\Java`,
@@ -75,9 +177,10 @@ func DetectJava(preferredPath, dataDir string) JavaInfo {
 	}
 
 	seen := make(map[string]bool)
+	var foundList []JavaInfo
 	for _, c := range candidates {
 		c = filepath.Clean(c)
-		if c == "" || seen[c] {
+		if c == "" || c == "." || seen[c] {
 			continue
 		}
 		seen[c] = true
@@ -86,10 +189,18 @@ func DetectJava(preferredPath, dataDir string) JavaInfo {
 		}
 		ver := probeJavaVersion(c)
 		if ver != "" {
-			return JavaInfo{Detected: true, Path: c, Version: ver}
+			foundList = append(foundList, JavaInfo{
+				Detected: true,
+				Path:     c,
+				Version:  ver,
+				Major:    ParseJavaMajor(ver),
+			})
 		}
 	}
-	return JavaInfo{}
+	sort.SliceStable(foundList, func(i, j int) bool {
+		return foundList[i].Major > foundList[j].Major
+	})
+	return foundList
 }
 
 func javaExeName() string {
@@ -126,8 +237,11 @@ func probeJavaVersion(javaPath string) string {
 	return "unknown"
 }
 
-// InstallManagedJRE downloads Eclipse Temurin 21 JRE into dataDir/jre for Desktop/Linux hosts.
-func InstallManagedJRE(ctx context.Context, dataDir string, progress func(string)) (JavaInfo, error) {
+// InstallManagedJRE downloads Eclipse Temurin JRE (default Java 25) into dataDir/jre<major> for Desktop/Linux hosts.
+func InstallManagedJRE(ctx context.Context, dataDir string, majorVersion int, progress func(string)) (JavaInfo, error) {
+	if majorVersion <= 0 {
+		majorVersion = 25
+	}
 	goos := runtime.GOOS
 	arch := runtime.GOARCH
 	var osPart, archPart string
@@ -148,9 +262,9 @@ func InstallManagedJRE(ctx context.Context, dataDir string, progress func(string
 		return JavaInfo{}, fmt.Errorf("unsupported CPU architecture for JRE: %s", arch)
 	}
 
-	url := fmt.Sprintf("https://api.adoptium.net/v3/binary/latest/21/ga/%s/%s/jre/hotspot/normal/eclipse?project=jdk", osPart, archPart)
+	url := fmt.Sprintf("https://api.adoptium.net/v3/binary/latest/%d/ga/%s/%s/jre/hotspot/normal/eclipse?project=jdk", majorVersion, osPart, archPart)
 	if progress != nil {
-		progress("Java 21 JRE indiriliyor...")
+		progress(fmt.Sprintf("Java %d JRE indiriliyor...", majorVersion))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -180,7 +294,7 @@ func InstallManagedJRE(ctx context.Context, dataDir string, progress func(string
 	}
 	tmpFile.Close()
 
-	jreRoot := filepath.Join(dataDir, "jre")
+	jreRoot := filepath.Join(dataDir, fmt.Sprintf("jre%d", majorVersion))
 	_ = os.RemoveAll(jreRoot)
 	extractTmp := filepath.Join(dataDir, "jre_tmp")
 	_ = os.RemoveAll(extractTmp)
@@ -190,7 +304,7 @@ func InstallManagedJRE(ctx context.Context, dataDir string, progress func(string
 	defer os.RemoveAll(extractTmp)
 
 	if progress != nil {
-		progress("Java 21 JRE arsivden cikariliyor...")
+		progress(fmt.Sprintf("Java %d JRE arsivden cikariliyor...", majorVersion))
 	}
 
 	if goos == "windows" {
