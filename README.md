@@ -1,6 +1,6 @@
 # MC SekaiLink
 
-**MC SekaiLink**, uzaktan VDS kiralamadan kendi cihazında (Windows, Linux veya Android) çalışan, dış ağdan bağlantı alabilen, modern arayüzlü, açık kaynaklı (MIT License) **Minecraft Java + Bedrock** yerel sunucu yöneticisidir.
+**MC SekaiLink**, uzaktan VDS kiralamadan kendi cihazında (Windows, Linux veya Android) çalışan, dış ağdan bağlantı alabilen, modern arayüzlü, açık kaynaklı (**MIT License**) **Minecraft Java + Bedrock** yerel sunucu yöneticisidir.
 
 ---
 
