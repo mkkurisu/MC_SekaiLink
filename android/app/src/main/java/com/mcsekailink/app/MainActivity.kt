@@ -40,6 +40,18 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestPermission()
     ) { _ -> }
 
+    private val jrePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            JreManager.importJreFromUri(this, uri) { msg ->
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -185,6 +197,13 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
                 }
+            }
+        }
+
+        @JavascriptInterface
+        fun importArm64JreFile() {
+            runOnUiThread {
+                jrePickerLauncher.launch(arrayOf("*/*"))
             }
         }
 

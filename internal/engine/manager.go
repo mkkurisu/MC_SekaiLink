@@ -374,7 +374,11 @@ func (m *Manager) buildStartCommand(inst models.ServerInstance) (*exec.Cmd, erro
 		argsFile := findNeoForgeArgsFile(inst.Path)
 		if argsFile != "" {
 			args = append(args, "@"+argsFile, "nogui")
-			return exec.Command(javaInfo.Path, args...), nil
+			cmd := exec.Command(javaInfo.Path, args...)
+			if env := javaEnvForBinary(javaInfo.Path); len(env) > 0 {
+				cmd.Env = env
+			}
+			return cmd, nil
 		}
 	}
 
@@ -386,7 +390,11 @@ func (m *Manager) buildStartCommand(inst models.ServerInstance) (*exec.Cmd, erro
 	if inst.Engine != models.EnginePowerNukkitX {
 		args = append(args, "nogui")
 	}
-	return exec.Command(javaInfo.Path, args...), nil
+	cmd := exec.Command(javaInfo.Path, args...)
+	if env := javaEnvForBinary(javaInfo.Path); len(env) > 0 {
+		cmd.Env = env
+	}
+	return cmd, nil
 }
 
 func buildJVMArgs(memoryMB int, preset models.JVMPreset, javaMajor int) []string {

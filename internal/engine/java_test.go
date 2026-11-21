@@ -1,6 +1,11 @@
 package engine
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestParseJavaMajor(t *testing.T) {
 	cases := map[string]int{
@@ -33,6 +38,39 @@ func TestRequiredJavaMajor(t *testing.T) {
 	for mcVer, want := range cases {
 		if got := RequiredJavaMajor(mcVer); got != want {
 			t.Errorf("RequiredJavaMajor(%q) = %d, want %d", mcVer, got, want)
+		}
+	}
+}
+
+func TestJavaEnvForBinary(t *testing.T) {
+	t.Setenv("SEKAILINK_PLATFORM", "android")
+	jreRoot := filepath.Join(t.TempDir(), "jre25")
+	if err := os.MkdirAll(filepath.Join(jreRoot, "lib", "jli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	javaBin := filepath.Join(jreRoot, "bin", "java")
+	env := javaEnvForBinary(javaBin)
+	if len(env) == 0 {
+		t.Fatalf("expected non-empty env for Android java binary")
+	}
+	var ldVal, homeVal string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "LD_LIBRARY_PATH=") {
+			ldVal = strings.TrimPrefix(kv, "LD_LIBRARY_PATH=")
+		} else if strings.HasPrefix(kv, "JAVA_HOME=") {
+			homeVal = strings.TrimPrefix(kv, "JAVA_HOME=")
+		}
+	}
+	if homeVal != jreRoot {
+		t.Fatalf("expected JAVA_HOME=%q, got %q", jreRoot, homeVal)
+	}
+	for _, wantSub := range []string{
+		filepath.Join(jreRoot, "lib"),
+		filepath.Join(jreRoot, "lib", "jli"),
+		filepath.Join(jreRoot, "lib", "server"),
+	} {
+		if !strings.Contains(ldVal, wantSub) {
+			t.Fatalf("expected LD_LIBRARY_PATH %q to contain %q", ldVal, wantSub)
 		}
 	}
 }

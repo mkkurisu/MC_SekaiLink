@@ -105,6 +105,7 @@ export interface AndroidBridge {
   getPlatform(): string;
   isJreInstalled(): boolean;
   installArm64Jre(): void;
+  importArm64JreFile?: () => void;
   stopLocalService(): void;
   requestBatteryUnrestricted(): void;
 }

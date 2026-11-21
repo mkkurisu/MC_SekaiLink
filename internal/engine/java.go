@@ -134,6 +134,11 @@ func DetectAllJavas(preferredPath, dataDir string) []JavaInfo {
 		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "jre21")))
 		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "jre")))
 		candidates = append(candidates, javaBinaryInHome(filepath.Join(dataDir, "runtime", "jre")))
+		if parent := filepath.Dir(filepath.Clean(dataDir)); parent != "" && parent != dataDir {
+			candidates = append(candidates, javaBinaryInHome(filepath.Join(parent, "jre25")))
+			candidates = append(candidates, javaBinaryInHome(filepath.Join(parent, "jre21")))
+			candidates = append(candidates, javaBinaryInHome(filepath.Join(parent, "jre")))
+		}
 	}
 	if env := strings.TrimSpace(os.Getenv("JAVA_HOME")); env != "" {
 		candidates = append(candidates, javaBinaryInHome(env))
@@ -165,8 +170,18 @@ func DetectAllJavas(preferredPath, dataDir string) []JavaInfo {
 			}
 		}
 	} else {
-		for _, root := range []string{"/usr/lib/jvm", "/opt/java"} {
+		roots := []string{"/usr/lib/jvm", "/opt/java", "/usr/local/java"}
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			roots = append(roots,
+				filepath.Join(home, ".jdks"),
+				filepath.Join(home, ".sdkman", "candidates", "java"),
+			)
+		}
+		for _, root := range roots {
 			if entries, err := os.ReadDir(root); err == nil {
+				if hasJavaExe(root) {
+					candidates = append(candidates, javaBinaryInHome(root))
+				}
 				for _, e := range entries {
 					if e.IsDir() {
 						candidates = append(candidates, javaBinaryInHome(filepath.Join(root, e.Name())))
@@ -219,9 +234,43 @@ func hasJavaExe(home string) bool {
 	return err == nil
 }
 
+func javaEnvForBinary(javaPath string) []string {
+	if javaPath == "" {
+		return nil
+	}
+	jreRoot := filepath.Dir(filepath.Dir(filepath.Clean(javaPath)))
+	_, hasJLI := os.Stat(filepath.Join(jreRoot, "lib", "jli"))
+	if DetectPlatformMode() != "android" && (runtime.GOOS != "linux" || hasJLI != nil) {
+		return nil
+	}
+	libPaths := []string{
+		filepath.Join(jreRoot, "lib"),
+		filepath.Join(jreRoot, "lib", "jli"),
+		filepath.Join(jreRoot, "lib", "server"),
+	}
+	if existing := strings.TrimSpace(os.Getenv("LD_LIBRARY_PATH")); existing != "" {
+		libPaths = append(libPaths, existing)
+	}
+	ldPath := strings.Join(libPaths, ":")
+
+	baseEnv := os.Environ()
+	out := make([]string, 0, len(baseEnv)+2)
+	for _, entry := range baseEnv {
+		if strings.HasPrefix(entry, "LD_LIBRARY_PATH=") || strings.HasPrefix(entry, "JAVA_HOME=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	out = append(out, "JAVA_HOME="+jreRoot, "LD_LIBRARY_PATH="+ldPath)
+	return out
+}
+
 func probeJavaVersion(javaPath string) string {
 	cmd := exec.Command(javaPath, "-version")
 	configureCmdWindow(cmd)
+	if env := javaEnvForBinary(javaPath); len(env) > 0 {
+		cmd.Env = env
+	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -329,11 +378,28 @@ func InstallManagedJRE(ctx context.Context, dataDir string, majorVersion int, pr
 		return JavaInfo{}, err
 	}
 
-	info := DetectJava(javaBinaryInHome(jreRoot), dataDir)
-	if !info.Detected {
-		return info, fmt.Errorf("JRE extracted but java binary failed to run")
+	if runtime.GOOS != "windows" {
+		binDir := filepath.Join(jreRoot, "bin")
+		if binEntries, err := os.ReadDir(binDir); err == nil {
+			for _, be := range binEntries {
+				if !be.IsDir() {
+					_ = os.Chmod(filepath.Join(binDir, be.Name()), 0o755)
+				}
+			}
+		}
 	}
-	return info, nil
+
+	binPath := javaBinaryInHome(jreRoot)
+	ver := probeJavaVersion(binPath)
+	if ver == "" {
+		return JavaInfo{}, fmt.Errorf("JRE extracted but java binary failed to run")
+	}
+	return JavaInfo{
+		Detected: true,
+		Path:     binPath,
+		Version:  ver,
+		Major:    ParseJavaMajor(ver),
+	}, nil
 }
 
 func extractZipSafe(zipPath, targetDir string) error {

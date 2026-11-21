@@ -100,7 +100,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
     const bridge = getAndroidBridge();
     if (bridge) {
       bridge.installArm64Jre();
-      setMsg('Android ARM64 Java 21 kurulumu baslatildi...');
+      setMsg('Android ARM64 Java kurulumu baslatildi...');
       return;
     }
     setInstallingJava(true);
@@ -149,7 +149,7 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               disabled={installingJava}
               onClick={handleInstallJava}
@@ -158,6 +158,14 @@ export const SettingsPage: React.FC<Props> = ({ server, system, onRefresh, onDel
               {installingJava ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
               Otomatik Java 25 Kur
             </button>
+            {getAndroidBridge()?.importArm64JreFile && (
+              <button
+                onClick={() => getAndroidBridge()?.importArm64JreFile?.()}
+                className="flex items-center gap-1.5 rounded-xl border border-violet-500/30 bg-violet-500/15 px-3.5 py-2 text-xs font-semibold text-violet-300 hover:bg-violet-500/25"
+              >
+                Telefondan JRE Sec (.tar.xz/.zip)
+              </button>
+            )}
             <button
               disabled={saving}
               onClick={handleSave}
