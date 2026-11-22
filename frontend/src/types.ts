@@ -258,8 +258,9 @@ export interface P2PPeerInfo {
 export interface P2PState {
   running: boolean;
   mode: '' | 'host' | 'join' | string;
-  phase: 'idle' | 'discovering' | 'waiting' | 'punching' | 'connected' | 'error' | string;
+  phase: 'idle' | 'discovering' | 'waiting' | 'punching' | 'connected' | 'reconnecting' | 'error' | string;
   roomCode?: string;
+  serverName?: string;
   natType?: 'cone' | 'symmetric' | 'unknown' | string;
   publicEndpoint?: string;
   localJavaPort?: number;

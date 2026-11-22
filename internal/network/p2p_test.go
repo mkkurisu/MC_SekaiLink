@@ -8,8 +8,12 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/MC_SekaiLink/mc-sekailink/internal/engine"
+	"github.com/quic-go/quic-go"
 )
 
 type inMemorySignalBus struct {
@@ -231,6 +235,7 @@ func TestP2PEndToEndHostAndJoinJavaTCPAndBedrockUDP(t *testing.T) {
 		PreferredBedrockPort: 0, // triggers 19132 or fallback
 		bus:                  bus,
 		disableSTUN:          true,
+		disableLANBroadcast:  true,
 	})
 	if err != nil {
 		t.Fatalf("StartJoin failed: %v", err)
@@ -292,5 +297,232 @@ func TestP2PEndToEndHostAndJoinJavaTCPAndBedrockUDP(t *testing.T) {
 	_ = hostMgr.Stop()
 	if joinMgr.Status().Running || hostMgr.Status().Running {
 		t.Fatal("expected both P2P managers to stop cleanly")
+	}
+}
+
+func TestJavaLANBroadcasterPacketAndDelivery(t *testing.T) {
+	pkt := string(engine.FormatJavaLANPacket("My [Cool]\nServer", 25565))
+	want := "[MOTD]My Cool Server[/MOTD][AD]25565[/AD]"
+	if pkt != want {
+		t.Fatalf("FormatJavaLANPacket mismatch: got=%q want=%q", pkt, want)
+	}
+
+	udpRecv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpRecv.Close()
+
+	var enabled atomic.Bool
+	enabled.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		engine.RunJavaLANBroadcaster(ctx, "TestLAN", 25577, enabled.Load, udpRecv.LocalAddr().String())
+	}()
+
+	_ = udpRecv.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 256)
+	n, _, err := udpRecv.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("failed to receive LAN beacon: %v", err)
+	}
+	if got := string(buf[:n]); got != "[MOTD]TestLAN[/MOTD][AD]25577[/AD]" {
+		t.Fatalf("unexpected LAN beacon payload: %q", got)
+	}
+
+	enabled.Store(false)
+	time.Sleep(180 * time.Millisecond)
+	// Drain any packet sent before flag flipped
+drain:
+	for {
+		_ = udpRecv.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
+		_, _, dErr := udpRecv.ReadFromUDP(buf)
+		if dErr != nil {
+			break drain
+		}
+	}
+	_ = udpRecv.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, _, err := udpRecv.ReadFromUDP(buf); err == nil {
+		t.Fatal("expected no beacons while shouldSend is false")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunJavaLANBroadcaster did not exit after cancel")
+	}
+}
+
+func TestP2PJoinAutoReconnectAndLANBroadcast(t *testing.T) {
+	javaLn, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer javaLn.Close()
+	javaPort := javaLn.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			c, err := javaLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}(c)
+		}
+	}()
+
+	bedrockConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bedrockConn.Close()
+	bedrockPort := bedrockConn.LocalAddr().(*net.UDPAddr).Port
+
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, rAddr, err := bedrockConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			reply := append([]byte("pong:"), buf[:n]...)
+			_, _ = bedrockConn.WriteToUDP(reply, rAddr)
+		}
+	}()
+
+	lanRecv, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lanRecv.Close()
+
+	bus := newInMemorySignalBus()
+	hostMgr := NewP2PManager()
+	joinMgr := NewP2PManager()
+	defer hostMgr.Stop()
+	defer joinMgr.Stop()
+
+	hostState, err := hostMgr.StartHost(P2PHostOptions{
+		ServerName:       "SekaiTest",
+		LocalJavaPort:    javaPort,
+		LocalBedrockPort: bedrockPort,
+		WantJava:         true,
+		WantBedrock:      true,
+		bus:              bus,
+		disableSTUN:      true,
+	})
+	if err != nil {
+		t.Fatalf("StartHost failed: %v", err)
+	}
+
+	joinState, err := joinMgr.StartJoin(P2PJoinOptions{
+		RoomCode:             hostState.RoomCode,
+		PeerName:             "ReconnectTester",
+		PreferredJavaPort:    0,
+		PreferredBedrockPort: 0,
+		bus:                  bus,
+		disableSTUN:          true,
+		lanBroadcastAddr:     lanRecv.LocalAddr().String(),
+	})
+	if err != nil {
+		t.Fatalf("StartJoin failed: %v", err)
+	}
+
+	// Verify initial Java LAN beacon contains the advertised server name & local port
+	_ = lanRecv.SetReadDeadline(time.Now().Add(3 * time.Second))
+	lanBuf := make([]byte, 256)
+	n, _, err := lanRecv.ReadFromUDP(lanBuf)
+	if err != nil {
+		t.Fatalf("expected Java LAN multicast beacon, got err=%v", err)
+	}
+	wantBeacon := string(engine.FormatJavaLANPacket("SekaiTest (P2P)", joinState.LocalJavaPort))
+	if got := string(lanBuf[:n]); got != wantBeacon {
+		t.Fatalf("unexpected LAN beacon: got=%q want=%q", got, wantBeacon)
+	}
+
+	// Wait for host to register the peer and get its initial peerID + qConn
+	var oldPeerID string
+	var oldConn *quic.Conn
+	waitPeerDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(waitPeerDeadline) {
+		hostMgr.mu.Lock()
+		for id, entry := range hostMgr.peers {
+			oldPeerID = id
+			oldConn = entry.qConn
+			break
+		}
+		hostMgr.mu.Unlock()
+		if oldConn != nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if oldConn == nil {
+		t.Fatal("host never registered initial peer")
+	}
+
+	// Simulate abrupt QUIC connection drop (e.g. Wi-Fi hiccup / CGNAT reset)
+	_ = oldConn.CloseWithError(1, "simulated wifi drop")
+
+	// Wait for join to automatically reconnect under a brand-new host peer session
+	reconnDeadline := time.Now().Add(10 * time.Second)
+	reconnected := false
+	for time.Now().Before(reconnDeadline) {
+		js := joinMgr.Status()
+		hostMgr.mu.Lock()
+		peerCount := len(hostMgr.peers)
+		_, stillOld := hostMgr.peers[oldPeerID]
+		hostMgr.mu.Unlock()
+		if js.Running && js.Phase == "connected" && peerCount == 1 && !stillOld {
+			reconnected = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !reconnected {
+		t.Fatalf("P2P join did not auto-reconnect cleanly: joinState=%+v hostState=%+v", joinMgr.Status(), hostMgr.Status())
+	}
+
+	// Confirm the EXACT SAME local Java TCP and Bedrock UDP proxy ports still forward after reconnect
+	jc, err := net.DialTimeout("tcp4", joinState.LocalJavaAddr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial same local Java addr after reconnect failed: %v", err)
+	}
+	_ = jc.SetDeadline(time.Now().Add(4 * time.Second))
+	payload := []byte("post-reconnect-java-ok")
+	if _, err := jc.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if tc, ok := jc.(*net.TCPConn); ok {
+		_ = tc.CloseWrite()
+	}
+	gotJava, err := io.ReadAll(jc)
+	_ = jc.Close()
+	if err != nil || !bytes.Equal(gotJava, payload) {
+		t.Fatalf("Java P2P after reconnect mismatch: got=%q want=%q err=%v", string(gotJava), string(payload), err)
+	}
+
+	bc, err := net.Dial("udp4", joinState.LocalBedrockAddr)
+	if err != nil {
+		t.Fatalf("dial same local Bedrock addr after reconnect failed: %v", err)
+	}
+	if _, err := bc.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	_ = bc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	udpBuf := make([]byte, 256)
+	un, err := bc.Read(udpBuf)
+	_ = bc.Close()
+	if err != nil || string(udpBuf[:un]) != "pong:ping" {
+		t.Fatalf("Bedrock P2P after reconnect mismatch: got=%q err=%v", string(udpBuf[:un]), err)
 	}
 }

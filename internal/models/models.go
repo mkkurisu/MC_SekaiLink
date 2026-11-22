@@ -313,8 +313,9 @@ type P2PPeerInfo struct {
 type P2PState struct {
 	Running          bool          `json:"running"`
 	Mode             string        `json:"mode"`  // "", "host", "join"
-	Phase            string        `json:"phase"` // "idle", "discovering", "waiting", "punching", "connected", "error"
+	Phase            string        `json:"phase"` // "idle", "discovering", "waiting", "punching", "connected", "reconnecting", "error"
 	RoomCode         string        `json:"roomCode,omitempty"`
+	ServerName       string        `json:"serverName,omitempty"`
 	NATType          string        `json:"natType,omitempty"` // "cone", "symmetric", "unknown"
 	PublicEndpoint   string        `json:"publicEndpoint,omitempty"`
 	LocalJavaPort    int           `json:"localJavaPort,omitempty"`

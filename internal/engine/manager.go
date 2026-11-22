@@ -36,6 +36,7 @@ type runningProc struct {
 	startedAt time.Time
 	stopCh    chan struct{}
 	stopping  bool
+	lanCancel context.CancelFunc
 }
 
 type consoleState struct {
@@ -324,7 +325,12 @@ func (m *Manager) Start(id string) error {
 		m.mu.Lock()
 		delete(m.procs, id)
 		wasStopping := proc.stopping
+		lanCancel := proc.lanCancel
+		proc.lanCancel = nil
 		m.mu.Unlock()
+		if lanCancel != nil {
+			lanCancel()
+		}
 		if proc.cmd.Process != nil {
 			ClearProcessMetrics(int32(proc.cmd.Process.Pid))
 		}
@@ -570,11 +576,32 @@ func (m *Manager) readStream(id string, r io.Reader, defaultLevel string) {
 
 func (m *Manager) processLineEvents(id, line string) {
 	if serverReadyRe.MatchString(line) {
-		if inst, err := m.store.GetInstance(id); err == nil && inst.Status != models.StatusOnline {
-			inst.Status = models.StatusOnline
-			_ = m.store.SaveInstance(inst)
-			m.broadcast(id, models.WSMessage{Type: "status", Data: inst.Status})
+		if inst, err := m.store.GetInstance(id); err == nil {
+			if inst.Status != models.StatusOnline {
+				inst.Status = models.StatusOnline
+				_ = m.store.SaveInstance(inst)
+				m.broadcast(id, models.WSMessage{Type: "status", Data: inst.Status})
+			}
+			if inst.Engine != models.EngineBDS && inst.Engine != models.EnginePowerNukkitX && inst.JavaPort > 0 {
+				var startLAN bool
+				var lanCtx context.Context
+				m.mu.Lock()
+				if proc, ok := m.procs[id]; ok && proc.lanCancel == nil {
+					var cancel context.CancelFunc
+					lanCtx, cancel = context.WithCancel(context.Background())
+					proc.lanCancel = cancel
+					startLAN = true
+				}
+				m.mu.Unlock()
+				if startLAN {
+					go RunJavaLANBroadcaster(lanCtx, inst.Name, inst.JavaPort, nil, "")
+				}
+			}
 		}
+	}
+
+	if strings.Contains(strings.ToLower(line), "outdated bedrock client") {
+		m.appendConsole(id, "WARN", "[MC SekaiLink] IPUCU: Bedrock 2026 surumleri 26.10, 26.20, 26.30... seklinde artar (26.3 eski surumdur, 26.30 degildir!). Telefona yukaridaki aralikta (orn. 26.30-26.52) bir Bedrock surumu kurun.")
 	}
 
 	if match := playerJoinRe.FindStringSubmatch(line); len(match) >= 3 {

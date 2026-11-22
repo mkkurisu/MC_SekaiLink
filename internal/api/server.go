@@ -1306,10 +1306,11 @@ func (s *Server) handleP2PStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleP2PHost(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LocalJavaPort    int  `json:"localJavaPort"`
-		LocalBedrockPort int  `json:"localBedrockPort"`
-		WantJava         bool `json:"wantJava"`
-		WantBedrock      bool `json:"wantBedrock"`
+		ServerName       string `json:"serverName"`
+		LocalJavaPort    int    `json:"localJavaPort"`
+		LocalBedrockPort int    `json:"localBedrockPort"`
+		WantJava         bool   `json:"wantJava"`
+		WantBedrock      bool   `json:"wantBedrock"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if !body.WantJava && !body.WantBedrock {
@@ -1322,6 +1323,7 @@ func (s *Server) handleP2PHost(w http.ResponseWriter, r *http.Request) {
 		body.LocalBedrockPort = 19132
 	}
 	st, err := s.p2p.StartHost(network.P2PHostOptions{
+		ServerName:       body.ServerName,
 		LocalJavaPort:    body.LocalJavaPort,
 		LocalBedrockPort: body.LocalBedrockPort,
 		WantJava:         body.WantJava,

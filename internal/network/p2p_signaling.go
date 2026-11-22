@@ -28,6 +28,7 @@ type p2pSignalMsg struct {
 	Type         string   `json:"type"` // "join_req", "host_offer"
 	PeerID       string   `json:"peerId,omitempty"`
 	PeerName     string   `json:"peerName,omitempty"`
+	ServerName   string   `json:"serverName,omitempty"`
 	TargetPeerID string   `json:"targetPeerId,omitempty"`
 	Candidates   []string `json:"candidates,omitempty"`
 	NATType      string   `json:"natType,omitempty"`

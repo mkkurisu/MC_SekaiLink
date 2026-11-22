@@ -138,6 +138,7 @@ export const NetworkPage: React.FC<Props> = ({
       const st = await apiFetch<P2PState>('/api/network/p2p/host', {
         method: 'POST',
         body: JSON.stringify({
+          serverName: server?.name || '',
           localJavaPort,
           localBedrockPort,
           wantJava: wantJavaForServer,
@@ -537,24 +538,43 @@ export const NetworkPage: React.FC<Props> = ({
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-3">
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="font-bold text-emerald-200">
-                    ● {t.p2pConnectedBanner} ({p2p.roomCode})
-                  </span>
-                  <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 font-mono font-bold text-emerald-300">
-                    {p2p.latencyMs || 1} ms
-                  </span>
+              {p2p.phase === 'reconnecting' ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/15 px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-amber-200">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t.p2pPhaseReconnecting} ({p2p.roomCode})
+                    </span>
+                  </div>
+                  <button
+                    disabled={busyP2P}
+                    onClick={stopP2P}
+                    className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3.5 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                    {t.p2pDisconnectBtn}
+                  </button>
                 </div>
-                <button
-                  disabled={busyP2P}
-                  onClick={stopP2P}
-                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3.5 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
-                >
-                  <Square className="h-3.5 w-3.5 fill-current" />
-                  {t.p2pDisconnectBtn}
-                </button>
-              </div>
+              ) : (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-bold text-emerald-200">
+                      ● {t.p2pConnectedBanner} ({p2p.roomCode})
+                    </span>
+                    <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 font-mono font-bold text-emerald-300">
+                      {p2p.latencyMs || 1} ms
+                    </span>
+                  </div>
+                  <button
+                    disabled={busyP2P}
+                    onClick={stopP2P}
+                    className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3.5 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                    {t.p2pDisconnectBtn}
+                  </button>
+                </div>
+              )}
 
               <div className="grid gap-3 sm:grid-cols-2">
                 {p2p.localJavaAddr && (

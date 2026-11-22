@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MC_SekaiLink/mc-sekailink/internal/engine"
 	"github.com/MC_SekaiLink/mc-sekailink/internal/models"
 	"github.com/quic-go/quic-go"
 )
@@ -46,6 +47,7 @@ var defaultSTUNServers = []string{
 
 type P2PHostOptions struct {
 	RoomCode         string
+	ServerName       string
 	LocalJavaPort    int
 	LocalBedrockPort int
 	WantJava         bool
@@ -62,9 +64,11 @@ type P2PJoinOptions struct {
 	PreferredJavaPort    int
 	PreferredBedrockPort int
 
-	bus         p2pSignalBus
-	stunServers []string
-	disableSTUN bool
+	bus                 p2pSignalBus
+	stunServers         []string
+	disableSTUN         bool
+	lanBroadcastAddr    string
+	disableLANBroadcast bool
 }
 
 type p2pPeerEntry struct {
@@ -80,6 +84,28 @@ type p2pSession struct {
 	listener    *quic.Listener
 	localJavaLn net.Listener
 	localBedUDP *net.UDPConn
+
+	connMu     sync.RWMutex
+	activeConn *quic.Conn
+}
+
+func (s *p2pSession) getActiveConn() *quic.Conn {
+	if s == nil {
+		return nil
+	}
+	s.connMu.RLock()
+	c := s.activeConn
+	s.connMu.RUnlock()
+	return c
+}
+
+func (s *p2pSession) setActiveConn(c *quic.Conn) {
+	if s == nil {
+		return
+	}
+	s.connMu.Lock()
+	s.activeConn = c
+	s.connMu.Unlock()
 }
 
 // P2PManager provides pure-Go cross-platform NAT hole-punched P2P rooms
@@ -139,6 +165,9 @@ func closeP2PSession(sess *p2pSession, peers map[string]*p2pPeerEntry) {
 	if sess.cancel != nil {
 		sess.cancel()
 	}
+	if active := sess.getActiveConn(); active != nil {
+		_ = active.CloseWithError(0, "p2p stopped")
+	}
 	for _, p := range peers {
 		if p.qConn != nil {
 			_ = p.qConn.CloseWithError(0, "p2p stopped")
@@ -164,9 +193,11 @@ func closeP2PSession(sess *p2pSession, peers map[string]*p2pPeerEntry) {
 func p2pQuicConfig() *quic.Config {
 	return &quic.Config{
 		MaxIncomingStreams:             512,
-		MaxIdleTimeout:                 30 * time.Second,
-		HandshakeIdleTimeout:           8 * time.Second,
-		KeepAlivePeriod:                5 * time.Second,
+		MaxIdleTimeout:                 60 * time.Second,
+		HandshakeIdleTimeout:           10 * time.Second,
+		KeepAlivePeriod:                3 * time.Second,
+		DisablePathMTUDiscovery:        true,
+		InitialPacketSize:              1200,
 		EnableDatagrams:                true,
 		InitialStreamReceiveWindow:     2 * 1024 * 1024,
 		MaxStreamReceiveWindow:         8 * 1024 * 1024,
@@ -237,6 +268,7 @@ func (pm *P2PManager) StartHost(opts P2PHostOptions) (models.P2PState, error) {
 		Mode:             "host",
 		Phase:            "discovering",
 		RoomCode:         roomCode,
+		ServerName:       strings.TrimSpace(opts.ServerName),
 		NATType:          "unknown",
 		LocalJavaPort:    opts.LocalJavaPort,
 		LocalBedrockPort: opts.LocalBedrockPort,
@@ -317,6 +349,8 @@ func (pm *P2PManager) hostSignalLoop(
 	var candMu sync.Mutex
 	latestStun := stunRes
 	latestCands := initialCands
+	lastStunAt := time.Now()
+	serverName := strings.TrimSpace(opts.ServerName)
 
 	for {
 		select {
@@ -335,12 +369,16 @@ func (pm *P2PManager) hostSignalLoop(
 				continue
 			}
 
-			// Refresh STUN if unknown
+			// Refresh STUN if unknown or stale (>25s) so NAT port rebinds are picked up fast
 			candMu.Lock()
-			if !opts.disableSTUN && latestStun.PublicEndpoint == "" {
+			needRefresh := !opts.disableSTUN && (latestStun.PublicEndpoint == "" || time.Since(lastStunAt) > 25*time.Second)
+			if needRefresh {
 				candMu.Unlock()
-				fresh := mux.discoverSTUN(ctx, servers)
+				stunCtx, cancelStun := context.WithTimeout(ctx, 2*time.Second)
+				fresh := mux.discoverSTUN(stunCtx, servers)
+				cancelStun()
 				candMu.Lock()
+				lastStunAt = time.Now()
 				if fresh.PublicEndpoint != "" {
 					latestStun = fresh
 					latestCands = buildP2PCandidates(mux.localPort(), fresh.PublicEndpoint, opts.disableSTUN)
@@ -360,6 +398,7 @@ func (pm *P2PManager) hostSignalLoop(
 			offer := p2pSignalMsg{
 				MsgID:        randomHex(6),
 				Type:         "host_offer",
+				ServerName:   serverName,
 				TargetPeerID: msg.PeerID,
 				Candidates:   offerCands,
 				NATType:      natType,
@@ -558,7 +597,7 @@ func (pm *P2PManager) handleHostControlStream(seq uint64, peerID string, stream 
 	}
 }
 
-// StartJoin joins a friend's P2P room using an XXXX-XXXX room code and exposes local loopback ports.
+// StartJoin joins a friend's P2P room using an XXXX-XXXX room code and exposes local loopback/LAN ports.
 func (pm *P2PManager) StartJoin(opts P2PJoinOptions) (models.P2PState, error) {
 	normCode, err := NormalizeRoomCode(opts.RoomCode)
 	if err != nil {
@@ -611,16 +650,13 @@ func (pm *P2PManager) StartJoin(opts P2PJoinOptions) (models.P2PState, error) {
 
 	go mux.run(ctx)
 
-	// Discover our reflexive STUN endpoint
-	stunRes := stunResult{NATType: "unknown"}
 	if !opts.disableSTUN {
 		servers := opts.stunServers
 		if len(servers) == 0 {
 			servers = defaultSTUNServers
 		}
-		stunRes = mux.discoverSTUN(ctx, servers)
+		go mux.keepAliveLoop(ctx, servers[0])
 	}
-	myCands := buildP2PCandidates(udpConn.LocalAddr().(*net.UDPAddr).Port, stunRes.PublicEndpoint, opts.disableSTUN)
 
 	bus := opts.bus
 	if bus == nil {
@@ -632,19 +668,158 @@ func (pm *P2PManager) StartJoin(opts P2PJoinOptions) (models.P2PState, error) {
 		return pm.failState("join", normCode, err)
 	}
 
+	qConn, offer, stunRes, err := pm.dialHostOverSignaling(ctx, seq, bus, topicHash, aesKey, mux, tr, sigCh, peerName, opts, false)
+	if err != nil {
+		_ = pm.Stop()
+		return pm.failState("join", normCode, err)
+	}
+
+	var localJavaAddr string
+	var localJavaPortNum int
+	var localJavaLn net.Listener
+	if offer.WantJava {
+		ln, bindErr := listenLocalTCPWithFallback(opts.PreferredJavaPort)
+		if bindErr != nil {
+			_ = qConn.CloseWithError(0, "local bind failed")
+			_ = pm.Stop()
+			return pm.failState("join", normCode, fmt.Errorf("yerel Java portu acilamadi: %w", bindErr))
+		}
+		localJavaLn = ln
+		_, portStr, _ := net.SplitHostPort(ln.Addr().String())
+		localJavaPortNum, _ = strconv.Atoi(portStr)
+		localJavaAddr = "localhost:" + portStr
+	}
+
+	var localBedrockAddr string
+	var localBedrockPortNum int
+	var localBedUDP *net.UDPConn
+	if offer.WantBedrock {
+		uc, bindErr := listenLocalUDPWithFallback(opts.PreferredBedrockPort)
+		if bindErr != nil {
+			if localJavaLn != nil {
+				_ = localJavaLn.Close()
+			}
+			_ = qConn.CloseWithError(0, "local udp bind failed")
+			_ = pm.Stop()
+			return pm.failState("join", normCode, fmt.Errorf("yerel Bedrock portu acilamadi: %w", bindErr))
+		}
+		localBedUDP = uc
+		_, portStr, _ := net.SplitHostPort(uc.LocalAddr().String())
+		localBedrockPortNum, _ = strconv.Atoi(portStr)
+		localBedrockAddr = "127.0.0.1:" + portStr
+	}
+
+	serverName := strings.TrimSpace(offer.ServerName)
+
+	pm.mu.Lock()
+	if pm.stopSeq != seq {
+		pm.mu.Unlock()
+		if localJavaLn != nil {
+			_ = localJavaLn.Close()
+		}
+		if localBedUDP != nil {
+			_ = localBedUDP.Close()
+		}
+		_ = qConn.CloseWithError(0, "stopped")
+		return pm.Status(), fmt.Errorf("oturum durduruldu")
+	}
+	sess.localJavaLn = localJavaLn
+	sess.localBedUDP = localBedUDP
+	sess.setActiveConn(qConn)
+	pm.peers["host"] = &p2pPeerEntry{
+		info: models.P2PPeerInfo{
+			ID:          "host",
+			Name:        "Sunucu Sahibi",
+			RemoteAddr:  qConn.RemoteAddr().String(),
+			ConnectedAt: time.Now().Unix(),
+		},
+		qConn: qConn,
+	}
+	pm.state.Running = true
+	pm.state.Phase = "connected"
+	pm.state.ServerName = serverName
+	pm.state.NATType = stunRes.NATType
+	pm.state.PublicEndpoint = stunRes.PublicEndpoint
+	pm.state.SignalingStatus = bus.Status()
+	pm.state.WantJava = offer.WantJava
+	pm.state.WantBedrock = offer.WantBedrock
+	pm.state.LocalJavaPort = localJavaPortNum
+	pm.state.LocalBedrockPort = localBedrockPortNum
+	pm.state.LocalJavaAddr = localJavaAddr
+	pm.state.LocalBedrockAddr = localBedrockAddr
+	pm.state.LatencyMs = 1
+	pm.state.LastError = ""
+	st := pm.state
+	pm.mu.Unlock()
+
+	var bedTable *p2pJoinBedrockTable
+	if localBedUDP != nil {
+		bedTable = newP2PJoinBedrockTable()
+	}
+
+	go pm.joinSupervisorLoop(ctx, seq, sess, bus, topicHash, aesKey, mux, tr, sigCh, peerName, opts, qConn, bedTable)
+	if localJavaLn != nil {
+		go pm.joinJavaAcceptLoop(ctx, seq, sess, localJavaLn)
+		if !opts.disableLANBroadcast && localJavaPortNum > 0 {
+			lanName := "MC SekaiLink P2P (" + normCode + ")"
+			if serverName != "" {
+				lanName = serverName + " (P2P)"
+			}
+			go engine.RunJavaLANBroadcaster(ctx, lanName, localJavaPortNum, func() bool {
+				return sess.getActiveConn() != nil
+			}, opts.lanBroadcastAddr)
+		}
+	}
+	if localBedUDP != nil && bedTable != nil {
+		go pm.joinBedrockForwardLoop(ctx, seq, sess, localBedUDP, bedTable)
+	}
+
+	return st, nil
+}
+
+func (pm *P2PManager) dialHostOverSignaling(
+	ctx context.Context,
+	seq uint64,
+	bus p2pSignalBus,
+	topicHash string,
+	aesKey [32]byte,
+	mux *p2pUDPMux,
+	tr *quic.Transport,
+	sigCh <-chan string,
+	peerName string,
+	opts P2PJoinOptions,
+	isReconnect bool,
+) (*quic.Conn, *p2pSignalMsg, stunResult, error) {
+	if ctx.Err() != nil {
+		return nil, nil, stunResult{NATType: "unknown"}, fmt.Errorf("baglanti iptal edildi")
+	}
+
+	stunRes := stunResult{NATType: "unknown"}
+	if !opts.disableSTUN {
+		servers := opts.stunServers
+		if len(servers) == 0 {
+			servers = defaultSTUNServers
+		}
+		stunCtx, cancelStun := context.WithTimeout(ctx, 2500*time.Millisecond)
+		stunRes = mux.discoverSTUN(stunCtx, servers)
+		cancelStun()
+	}
+	myCands := buildP2PCandidates(mux.localPort(), stunRes.PublicEndpoint, opts.disableSTUN)
+
 	var peerTag [8]byte
 	_, _ = rand.Read(peerTag[:])
 	peerID := hex.EncodeToString(peerTag[:])
 
 	pm.mu.Lock()
 	if pm.stopSeq == seq {
-		pm.state.NATType = stunRes.NATType
-		pm.state.PublicEndpoint = stunRes.PublicEndpoint
+		if stunRes.PublicEndpoint != "" || pm.state.PublicEndpoint == "" {
+			pm.state.NATType = stunRes.NATType
+			pm.state.PublicEndpoint = stunRes.PublicEndpoint
+		}
 		pm.state.SignalingStatus = bus.Status()
 	}
 	pm.mu.Unlock()
 
-	// Send join_req with short retries until host_offer matching peerID arrives
 	reqMsg := p2pSignalMsg{
 		MsgID:      randomHex(6),
 		Type:       "join_req",
@@ -658,15 +833,15 @@ func (pm *P2PManager) StartJoin(opts P2PJoinOptions) (models.P2PState, error) {
 	reqPlain, _ := json.Marshal(reqMsg)
 	encReq, err := encryptSignal(aesKey, reqPlain)
 	if err != nil {
-		_ = pm.Stop()
-		return pm.failState("join", normCode, err)
+		return nil, nil, stunRes, err
 	}
 
 	publishCtx, cancelPub := context.WithCancel(ctx)
+	defer cancelPub()
 	go func() {
 		defer cancelPub()
 		_ = bus.Publish(publishCtx, topicHash, encReq)
-		ticker := time.NewTicker(1800 * time.Millisecond)
+		ticker := time.NewTicker(1500 * time.Millisecond)
 		defer ticker.Stop()
 		for i := 0; i < 4; i++ {
 			select {
@@ -686,14 +861,12 @@ waitOffer:
 	for {
 		select {
 		case <-ctx.Done():
-			return pm.Status(), fmt.Errorf("baglanti iptal edildi")
+			return nil, nil, stunRes, fmt.Errorf("baglanti iptal edildi")
 		case <-offerDeadline.C:
-			_ = pm.Stop()
-			return pm.failState("join", normCode, fmt.Errorf("oda bulunamadi: oda kodunu kontrol edin ve arkadasinizin P2P odasinin acik oldugundan emin olun"))
+			return nil, nil, stunRes, fmt.Errorf("oda bulunamadi: oda kodunu kontrol edin ve arkadasinizin P2P odasinin acik oldugundan emin olun")
 		case encMsg, ok := <-sigCh:
 			if !ok {
-				_ = pm.Stop()
-				return pm.failState("join", normCode, fmt.Errorf("sinyallesme kanali kapandi"))
+				return nil, nil, stunRes, fmt.Errorf("sinyallesme kanali kapandi")
 			}
 			plain, dErr := decryptSignal(aesKey, encMsg)
 			if dErr != nil {
@@ -711,15 +884,19 @@ waitOffer:
 	}
 	cancelPub()
 
-	pm.mu.Lock()
-	if pm.stopSeq == seq {
-		pm.state.Phase = "punching"
+	if !isReconnect {
+		pm.mu.Lock()
+		if pm.stopSeq == seq {
+			pm.state.Phase = "punching"
+		}
+		pm.mu.Unlock()
 	}
-	pm.mu.Unlock()
 
-	// Punch toward all host candidates (and watch for verified punch response)
 	punchCtx, cancelPunch := context.WithCancel(ctx)
+	defer cancelPunch()
 	verifiedCh := mux.watchVerified(peerTag)
+	defer mux.unwatchVerified(peerTag)
+
 	hostTargets := expandSymmetricCandidates(offer.Candidates, offer.NATType, offer.PortDelta)
 	go mux.burstPunch(punchCtx, peerTag, hostTargets, 5*time.Second)
 
@@ -730,9 +907,8 @@ waitOffer:
 		targetAddr = addr
 	case <-punchWait.C:
 	case <-ctx.Done():
-		cancelPunch()
 		punchWait.Stop()
-		return pm.Status(), fmt.Errorf("baglanti iptal edildi")
+		return nil, nil, stunRes, fmt.Errorf("baglanti iptal edildi")
 	}
 	punchWait.Stop()
 
@@ -746,7 +922,6 @@ waitOffer:
 		cancelDial()
 	}
 
-	// Fallback: try raw host candidates directly if punch wait expired or specific candidate failed
 	if qConn == nil {
 		for _, candStr := range offer.Candidates {
 			udpAddr, rErr := net.ResolveUDPAddr("udp4", candStr)
@@ -764,125 +939,184 @@ waitOffer:
 			dialErr = err2
 		}
 	}
-	cancelPunch()
 
 	if qConn == nil {
-		_ = pm.Stop()
 		if stunRes.NATType == "symmetric" || offer.NATType == "symmetric" {
-			return pm.failState("join", normCode, fmt.Errorf("simetrik CGNAT (mobil veri veya kisitli ISS) direkt P2P delmeyi engelledi. Ev Wi-Fi deneyin veya e4mc / pinggy.io / playit.gg koprusunu kullanin"))
+			return nil, nil, stunRes, fmt.Errorf("simetrik CGNAT (mobil veri veya kisitli ISS) direkt P2P delmeyi engelledi. Ev Wi-Fi deneyin veya e4mc / pinggy.io / playit.gg koprusunu kullanin")
 		}
 		if dialErr != nil {
-			return pm.failState("join", normCode, fmt.Errorf("direkt P2P baglantisi kurulamadi: %w", dialErr))
+			return nil, nil, stunRes, fmt.Errorf("direkt P2P baglantisi kurulamadi: %w", dialErr)
 		}
-		return pm.failState("join", normCode, fmt.Errorf("direkt P2P zaman asimi (guvenlik duvari UDP paketlerini engelliyor olabilir)"))
+		return nil, nil, stunRes, fmt.Errorf("direkt P2P zaman asimi (guvenlik duvari UDP paketlerini engelliyor olabilir)")
 	}
 
-	var localJavaAddr string
-	var localJavaLn net.Listener
-	if offer.WantJava {
-		ln, bindErr := listenLocalTCPWithFallback(opts.PreferredJavaPort)
-		if bindErr != nil {
-			_ = qConn.CloseWithError(0, "local bind failed")
-			_ = pm.Stop()
-			return pm.failState("join", normCode, fmt.Errorf("yerel Java portu acilamadi: %w", bindErr))
-		}
-		localJavaLn = ln
-		_, portStr, _ := net.SplitHostPort(ln.Addr().String())
-		localJavaAddr = "localhost:" + portStr
-	}
-
-	var localBedrockAddr string
-	var localBedUDP *net.UDPConn
-	if offer.WantBedrock {
-		uc, bindErr := listenLocalUDPWithFallback(opts.PreferredBedrockPort)
-		if bindErr != nil {
-			if localJavaLn != nil {
-				_ = localJavaLn.Close()
-			}
-			_ = qConn.CloseWithError(0, "local udp bind failed")
-			_ = pm.Stop()
-			return pm.failState("join", normCode, fmt.Errorf("yerel Bedrock portu acilamadi: %w", bindErr))
-		}
-		localBedUDP = uc
-		localBedrockAddr = uc.LocalAddr().String()
-	}
-
-	pm.mu.Lock()
-	if pm.stopSeq != seq {
-		pm.mu.Unlock()
-		if localJavaLn != nil {
-			_ = localJavaLn.Close()
-		}
-		if localBedUDP != nil {
-			_ = localBedUDP.Close()
-		}
-		_ = qConn.CloseWithError(0, "stopped")
-		return pm.Status(), fmt.Errorf("oturum durduruldu")
-	}
-	sess.localJavaLn = localJavaLn
-	sess.localBedUDP = localBedUDP
-	pm.peers["host"] = &p2pPeerEntry{
-		info: models.P2PPeerInfo{
-			ID:          "host",
-			Name:        "Sunucu Sahibi",
-			RemoteAddr:  qConn.RemoteAddr().String(),
-			ConnectedAt: time.Now().Unix(),
-		},
-		qConn: qConn,
-	}
-	pm.state.Running = true
-	pm.state.Phase = "connected"
-	pm.state.WantJava = offer.WantJava
-	pm.state.WantBedrock = offer.WantBedrock
-	pm.state.LocalJavaAddr = localJavaAddr
-	pm.state.LocalBedrockAddr = localBedrockAddr
-	pm.state.LatencyMs = 1
-	st := pm.state
-	pm.mu.Unlock()
-
-	// Start control RTT loop, Java TCP acceptor, and Bedrock UDP relay loops
-	go pm.joinControlLoop(ctx, seq, qConn, peerName)
-	if localJavaLn != nil {
-		go pm.joinJavaAcceptLoop(ctx, seq, qConn, localJavaLn)
-	}
-	if localBedUDP != nil {
-		go pm.joinBedrockForwardLoop(ctx, seq, qConn, localBedUDP)
-	}
-
-	return st, nil
+	return qConn, offer, stunRes, nil
 }
 
-func (pm *P2PManager) joinControlLoop(ctx context.Context, seq uint64, qConn *quic.Conn, peerName string) {
-	streamCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	stream, err := qConn.OpenStreamSync(streamCtx)
-	cancel()
-	if err != nil {
-		return
-	}
-	defer stream.Close()
+func (pm *P2PManager) joinSupervisorLoop(
+	ctx context.Context,
+	seq uint64,
+	sess *p2pSession,
+	bus p2pSignalBus,
+	topicHash string,
+	aesKey [32]byte,
+	mux *p2pUDPMux,
+	tr *quic.Transport,
+	sigCh <-chan string,
+	peerName string,
+	opts P2PJoinOptions,
+	initialConn *quic.Conn,
+	bedTable *p2pJoinBedrockTable,
+) {
+	curConn := initialConn
+	backoffs := []time.Duration{250 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
-	helloRaw, _ := json.Marshal(map[string]string{"peerName": peerName})
-	hdr := make([]byte, 1+2+len(helloRaw))
-	hdr[0] = p2pStreamControl
-	binary.BigEndian.PutUint16(hdr[1:3], uint16(len(helloRaw)))
-	copy(hdr[3:], helloRaw)
-	if _, err := stream.Write(hdr); err != nil {
-		return
+	for {
+		connCtx, cancelConn := context.WithCancel(ctx)
+		if sess.localBedUDP != nil && bedTable != nil {
+			go pm.joinBedrockReceiveLoop(connCtx, curConn, sess.localBedUDP, bedTable)
+		}
+
+		pm.runJoinControlSession(connCtx, seq, curConn, peerName)
+		cancelConn()
+		sess.setActiveConn(nil)
+		_ = curConn.CloseWithError(0, "p2p reconnecting")
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		pm.mu.Lock()
+		if pm.stopSeq != seq {
+			pm.mu.Unlock()
+			return
+		}
+		delete(pm.peers, "host")
+		pm.state.Running = true
+		pm.state.Phase = "reconnecting"
+		pm.state.LatencyMs = 0
+		pm.state.LastError = ""
+		pm.mu.Unlock()
+
+		attempt := 0
+		for {
+			wait := backoffs[len(backoffs)-1]
+			if attempt < len(backoffs) {
+				wait = backoffs[attempt]
+			}
+			attempt++
+
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+
+			newConn, newOffer, newStun, dialErr := pm.dialHostOverSignaling(ctx, seq, bus, topicHash, aesKey, mux, tr, sigCh, peerName, opts, true)
+			if ctx.Err() != nil {
+				if newConn != nil {
+					_ = newConn.CloseWithError(0, "stopped")
+				}
+				return
+			}
+			if dialErr != nil || newConn == nil {
+				pm.mu.Lock()
+				if pm.stopSeq == seq && dialErr != nil {
+					pm.state.LastError = dialErr.Error()
+				}
+				pm.mu.Unlock()
+				continue
+			}
+
+			pm.mu.Lock()
+			if pm.stopSeq != seq || ctx.Err() != nil {
+				pm.mu.Unlock()
+				_ = newConn.CloseWithError(0, "stopped")
+				return
+			}
+			sess.setActiveConn(newConn)
+			pm.peers["host"] = &p2pPeerEntry{
+				info: models.P2PPeerInfo{
+					ID:          "host",
+					Name:        "Sunucu Sahibi",
+					RemoteAddr:  newConn.RemoteAddr().String(),
+					ConnectedAt: time.Now().Unix(),
+				},
+				qConn: newConn,
+			}
+			pm.state.Running = true
+			pm.state.Phase = "connected"
+			pm.state.LatencyMs = 1
+			pm.state.LastError = ""
+			pm.state.SignalingStatus = bus.Status()
+			if newStun.PublicEndpoint != "" {
+				pm.state.NATType = newStun.NATType
+				pm.state.PublicEndpoint = newStun.PublicEndpoint
+			}
+			if strings.TrimSpace(newOffer.ServerName) != "" {
+				pm.state.ServerName = strings.TrimSpace(newOffer.ServerName)
+			}
+			pm.mu.Unlock()
+
+			curConn = newConn
+			break
+		}
 	}
+}
+
+func (pm *P2PManager) runJoinControlSession(ctx context.Context, seq uint64, qConn *quic.Conn, peerName string) {
+	doneWatch := make(chan struct{})
+	defer close(doneWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = qConn.CloseWithError(0, "context cancelled")
+		case <-qConn.Context().Done():
+		case <-doneWatch:
+		}
+	}()
+
+	openControlStream := func() (*quic.Stream, error) {
+		streamCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		s, err := qConn.OpenStreamSync(streamCtx)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		helloRaw, _ := json.Marshal(map[string]string{"peerName": peerName})
+		hdr := make([]byte, 1+2+len(helloRaw))
+		hdr[0] = p2pStreamControl
+		binary.BigEndian.PutUint16(hdr[1:3], uint16(len(helloRaw)))
+		copy(hdr[3:], helloRaw)
+		if _, err := s.Write(hdr); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+		return s, nil
+	}
+
+	var stream *quic.Stream
+	defer func() {
+		if stream != nil {
+			_ = stream.Close()
+		}
+	}()
 
 	var lastRttMs int64
-	sendPing := func() error {
+	sendPing := func(s *quic.Stream) error {
 		var pkt [17]byte
 		pkt[0] = 0x01
 		binary.BigEndian.PutUint64(pkt[1:9], uint64(time.Now().UnixNano()))
 		binary.BigEndian.PutUint64(pkt[9:17], uint64(lastRttMs))
-		if _, err := stream.Write(pkt[:]); err != nil {
+		if _, err := s.Write(pkt[:]); err != nil {
 			return err
 		}
 		var reply [9]byte
-		_ = stream.SetReadDeadline(time.Now().Add(4 * time.Second))
-		_, err := io.ReadFull(stream, reply[:])
-		_ = stream.SetReadDeadline(time.Time{})
+		_ = s.SetReadDeadline(time.Now().Add(7 * time.Second))
+		_, err := io.ReadFull(s, reply[:])
+		_ = s.SetReadDeadline(time.Time{})
 		if err != nil {
 			return err
 		}
@@ -903,32 +1137,68 @@ func (pm *P2PManager) joinControlLoop(ctx context.Context, seq uint64, qConn *qu
 		return nil
 	}
 
-	if err := sendPing(); err != nil {
-		return
-	}
-
-	ticker := time.NewTicker(2500 * time.Millisecond)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+
+	misses := 0
 	for {
+		if ctx.Err() != nil || qConn.Context().Err() != nil {
+			return
+		}
+		if stream == nil {
+			var openErr error
+			stream, openErr = openControlStream()
+			if openErr != nil {
+				if ctx.Err() != nil || qConn.Context().Err() != nil {
+					return
+				}
+				misses++
+				if misses >= 3 {
+					return
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-qConn.Context().Done():
+					return
+				case <-time.After(800 * time.Millisecond):
+					continue
+				}
+			}
+		}
+
+		if err := sendPing(stream); err != nil {
+			_ = stream.Close()
+			stream = nil
+			if ctx.Err() != nil || qConn.Context().Err() != nil {
+				return
+			}
+			misses++
+			if misses >= 3 {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-qConn.Context().Done():
+				return
+			case <-time.After(800 * time.Millisecond):
+				continue
+			}
+		}
+		misses = 0
+
 		select {
 		case <-ctx.Done():
 			return
+		case <-qConn.Context().Done():
+			return
 		case <-ticker.C:
-			if err := sendPing(); err != nil {
-				pm.mu.Lock()
-				if pm.stopSeq == seq && ctx.Err() == nil {
-					pm.state.Running = false
-					pm.state.Phase = "error"
-					pm.state.LastError = "P2P baglantisi koptu"
-				}
-				pm.mu.Unlock()
-				return
-			}
 		}
 	}
 }
 
-func (pm *P2PManager) joinJavaAcceptLoop(ctx context.Context, seq uint64, qConn *quic.Conn, ln net.Listener) {
+func (pm *P2PManager) joinJavaAcceptLoop(ctx context.Context, seq uint64, sess *p2pSession, ln net.Listener) {
 	for {
 		localConn, err := ln.Accept()
 		if err != nil {
@@ -941,6 +1211,11 @@ func (pm *P2PManager) joinJavaAcceptLoop(ctx context.Context, seq uint64, qConn 
 		}
 		tuneTCPConn(localConn)
 		go func(lc net.Conn) {
+			qConn := sess.getActiveConn()
+			if qConn == nil {
+				_ = lc.Close()
+				return
+			}
 			sCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			stream, sErr := qConn.OpenStreamSync(sCtx)
 			cancel()
@@ -1050,14 +1325,35 @@ func (t *p2pJoinBedrockTable) lookup(sid uint16) *net.UDPAddr {
 	return a
 }
 
-func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, qConn *quic.Conn, udpLn *net.UDPConn) {
-	table := newP2PJoinBedrockTable()
+func (pm *P2PManager) joinBedrockReceiveLoop(ctx context.Context, qConn *quic.Conn, udpLn *net.UDPConn, table *p2pJoinBedrockTable) {
+	for {
+		dgram, err := qConn.ReceiveDatagram(ctx)
+		if err != nil {
+			return
+		}
+		if len(dgram) < 3 {
+			continue
+		}
+		sid := binary.BigEndian.Uint16(dgram[0:2])
+		if addr := table.lookup(sid); addr != nil {
+			_, _ = udpLn.WriteToUDP(dgram[2:], addr)
+		}
+	}
+}
+
+func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, sess *p2pSession, udpLn *net.UDPConn, table *p2pJoinBedrockTable) {
 	var fallbackMu sync.Mutex
+	var fallbackConn *quic.Conn
 	var fallbackStream *quic.Stream
 
-	sendViaFallback := func(sid uint16, payload []byte) {
+	sendViaFallback := func(qConn *quic.Conn, sid uint16, payload []byte) {
 		fallbackMu.Lock()
 		defer fallbackMu.Unlock()
+		if fallbackStream != nil && fallbackConn != qConn {
+			_ = fallbackStream.Close()
+			fallbackStream = nil
+			fallbackConn = nil
+		}
 		if fallbackStream == nil {
 			sCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 			s, err := qConn.OpenStreamSync(sCtx)
@@ -1070,6 +1366,7 @@ func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, qCon
 				return
 			}
 			fallbackStream = s
+			fallbackConn = qConn
 			go func(fs *quic.Stream) {
 				for {
 					rSid, rPayload, rErr := readBedrockFallbackFrame(fs)
@@ -1085,27 +1382,11 @@ func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, qCon
 		if err := writeBedrockFallbackFrame(fallbackStream, sid, payload); err != nil {
 			_ = fallbackStream.Close()
 			fallbackStream = nil
+			fallbackConn = nil
 		}
 	}
 
-	// Reader: QUIC Datagrams -> local Bedrock client UDPAddr
-	go func() {
-		for {
-			dgram, err := qConn.ReceiveDatagram(ctx)
-			if err != nil {
-				return
-			}
-			if len(dgram) < 3 {
-				continue
-			}
-			sid := binary.BigEndian.Uint16(dgram[0:2])
-			if addr := table.lookup(sid); addr != nil {
-				_, _ = udpLn.WriteToUDP(dgram[2:], addr)
-			}
-		}
-	}()
-
-	// Writer: local Bedrock client -> QUIC Datagram
+	// Writer: local Bedrock client -> QUIC Datagram on current active QUIC connection
 	buf := make([]byte, 4096)
 	for {
 		n, remoteAddr, err := udpLn.ReadFromUDP(buf)
@@ -1115,6 +1396,10 @@ func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, qCon
 		if n <= 0 {
 			continue
 		}
+		qConn := sess.getActiveConn()
+		if qConn == nil {
+			continue
+		}
 		sid := table.getOrCreate(remoteAddr)
 		dgram := make([]byte, 2+n)
 		binary.BigEndian.PutUint16(dgram[0:2], sid)
@@ -1122,7 +1407,7 @@ func (pm *P2PManager) joinBedrockForwardLoop(ctx context.Context, _ uint64, qCon
 		if err := qConn.SendDatagram(dgram); err != nil {
 			var tooLarge *quic.DatagramTooLargeError
 			if errors.As(err, &tooLarge) {
-				sendViaFallback(sid, buf[:n])
+				sendViaFallback(qConn, sid, buf[:n])
 			} else if ctx.Err() != nil {
 				return
 			}
@@ -1356,6 +1641,12 @@ func (m *p2pUDPMux) watchVerified(peerTag [8]byte) <-chan *net.UDPAddr {
 	m.punchWatch[peerTag] = ch
 	m.mu.Unlock()
 	return ch
+}
+
+func (m *p2pUDPMux) unwatchVerified(peerTag [8]byte) {
+	m.mu.Lock()
+	delete(m.punchWatch, peerTag)
+	m.mu.Unlock()
 }
 
 func (m *p2pUDPMux) run(ctx context.Context) {
@@ -1602,7 +1893,7 @@ func (m *p2pUDPMux) discoverSTUN(ctx context.Context, servers []string) stunResu
 }
 
 func (m *p2pUDPMux) keepAliveLoop(ctx context.Context, stunServer string) {
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1804,18 +2095,30 @@ func buildPinnedP2PClientTLS(expectedSHA256 string) *tls.Config {
 
 func listenLocalTCPWithFallback(preferredPort int) (net.Listener, error) {
 	if preferredPort > 0 && preferredPort <= 65535 {
+		if ln, err := net.Listen("tcp4", net.JoinHostPort("0.0.0.0", strconv.Itoa(preferredPort))); err == nil {
+			return ln, nil
+		}
 		if ln, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(preferredPort))); err == nil {
 			return ln, nil
 		}
+	}
+	if ln, err := net.Listen("tcp4", "0.0.0.0:0"); err == nil {
+		return ln, nil
 	}
 	return net.Listen("tcp4", "127.0.0.1:0")
 }
 
 func listenLocalUDPWithFallback(preferredPort int) (*net.UDPConn, error) {
 	if preferredPort > 0 && preferredPort <= 65535 {
+		if uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: preferredPort}); err == nil {
+			return uc, nil
+		}
 		if uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: preferredPort}); err == nil {
 			return uc, nil
 		}
+	}
+	if uc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
+		return uc, nil
 	}
 	return net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 }
