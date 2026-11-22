@@ -20,7 +20,7 @@ import {
 import { Area, AreaChart, ResponsiveContainer, Tooltip } from 'recharts';
 import { apiFetch, copyTextSafe, formatUptime } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
-import { BoreState, E4mcState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
+import { AutoTunnelResult, BoreState, E4mcState, RelayState, ServerInstance, ServerMetrics, SystemOverview, TunnelState } from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
 interface Props {
@@ -153,45 +153,57 @@ export const DashboardPage: React.FC<Props> = ({
   const showJava = server.engine !== 'bds' && server.engine !== 'powernukkitx';
   const showBedrock = server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx';
 
+  const relayJavaActive = Boolean(relay?.running && relay.javaAddress);
+  const relayBedrockActive = Boolean(relay?.running && relay.bedrockAddress);
   const e4mcActive = Boolean(e4mc?.running && e4mc.domain);
   const playitJavaActive = Boolean(tunnel?.running && tunnel.javaAddress);
-  const relayJavaActive = Boolean(relay?.running && relay.javaAddress);
   const boreActive = Boolean(bore?.running && bore.address);
 
+  const relayPingText = relay?.latencyMs ? ` • ${relay.latencyMs} ms` : '';
+  const relayEncText = relay?.encrypted ? ' • TLS' : '';
+  const relayNodeLabel = relay?.nodeId || 'SV-Relay';
+
   const publicJava =
+    (relayJavaActive && relay!.javaAddress) ||
     (e4mcActive && e4mc!.domain) ||
     (playitJavaActive && tunnel!.javaAddress) ||
-    (relayJavaActive && relay!.javaAddress) ||
     (boreActive && bore!.address) ||
     '';
 
   let publicJavaLabel: string = td.publicTunnel;
-  if (e4mcActive) {
+  if (relayJavaActive) {
+    publicJavaLabel = `${td.connectedBridgePrefix} ${relayNodeLabel}${relayPingText}${relayEncText}`;
+  } else if (e4mcActive) {
     const pingText = e4mc!.latencyMs > 0 ? ` • ${e4mc!.latencyMs} ms` : '';
     publicJavaLabel = `${td.friendsLabelPrefix} (e4mc • ${e4mc!.region || 'EU'}${pingText})`;
   } else if (playitJavaActive) {
     publicJavaLabel = `${td.friendsLabelPrefix} (playit.gg)`;
-  } else if (relayJavaActive) {
-    const pingText = relay!.latencyMs ? ` • ${relay!.latencyMs} ms` : '';
-    publicJavaLabel = `${td.friendsLabelPrefix} (SekaiLink Relay${pingText})`;
   } else if (boreActive) {
     const pingText = bore!.latencyMs ? ` • ${bore!.latencyMs} ms` : '';
     publicJavaLabel = `${td.friendsLabelPrefix} (bore.pub${pingText})`;
   }
 
   const publicBedrock =
+    (relayBedrockActive && relay!.bedrockAddress) ||
     (tunnel?.running && tunnel.bedrockAddress) ||
-    (relay?.running && relay.bedrockAddress) ||
     '';
-  const publicBedrockLabel: string = tunnel?.running && tunnel.bedrockAddress ? td.publicTunnel : td.friendsRelayLabel;
+  const publicBedrockLabel: string = relayBedrockActive
+    ? `${td.connectedBridgePrefix} ${relayNodeLabel}${relayPingText}${relayEncText}`
+    : td.publicTunnel;
 
   const startQuickE4mc = async () => {
     setQuickOpeningTunnel(true);
     setError('');
     try {
-      await apiFetch('/api/network/e4mc/start', {
+      const localBedrockPort = server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort;
+      await apiFetch<AutoTunnelResult>('/api/network/tunnel/auto-start', {
         method: 'POST',
-        body: JSON.stringify({ localPort: server.javaPort }),
+        body: JSON.stringify({
+          localJavaPort: server.javaPort,
+          localBedrockPort,
+          wantJava: showJava,
+          wantBedrock: showBedrock,
+        }),
       });
       onRefresh();
     } catch (e: unknown) {

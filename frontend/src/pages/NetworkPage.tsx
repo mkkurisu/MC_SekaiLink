@@ -10,7 +10,9 @@ import {
   Globe,
   Info,
   Loader2,
+  Lock,
   Play,
+  Plus,
   QrCode,
   Radio,
   RefreshCw,
@@ -18,11 +20,24 @@ import {
   ShieldCheck,
   Smartphone,
   Square,
+  Trash2,
   Zap,
 } from 'lucide-react';
 import { apiFetch, copyTextSafe } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
-import { AppConfig, BoreState, E4mcState, NetworkDiagnostics, RelayState, ServerInstance, SystemOverview, TunnelState } from '../types';
+import {
+  AppConfig,
+  AutoTunnelResult,
+  BoreState,
+  E4mcState,
+  NetworkDiagnostics,
+  RelayNode,
+  RelayNodeProbe,
+  RelayState,
+  ServerInstance,
+  SystemOverview,
+  TunnelState,
+} from '../types';
 import { QrShareModal } from '../components/QrShareModal';
 
 interface Props {
@@ -57,12 +72,19 @@ export const NetworkPage: React.FC<Props> = ({
   const [busyE4mc, setBusyE4mc] = useState(false);
   const [busyBore, setBusyBore] = useState(false);
   const [busyRelay, setBusyRelay] = useState(false);
+  const [probingRelay, setProbingRelay] = useState(false);
   const [busyUpnp, setBusyUpnp] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [boreHost, setBoreHost] = useState('bore.pub');
-  const [relayAddr, setRelayAddr] = useState(() => localStorage.getItem('sekailink_relay_addr') || '');
-  const [relaySecret, setRelaySecret] = useState('');
+  const [relayNodes, setRelayNodes] = useState<RelayNode[]>(() => config?.relayNodes || []);
+  const [relayProbes, setRelayProbes] = useState<Record<string, RelayNodeProbe>>({});
+
+  const [newNodeId, setNewNodeId] = useState('SV-Oracle');
+  const [newNodeAddr, setNewNodeAddr] = useState(() => localStorage.getItem('sekailink_relay_addr') || '');
+  const [newNodeSecret, setNewNodeSecret] = useState('');
+  const [newNodePin, setNewNodePin] = useState('');
+  const [newNodeTLS, setNewNodeTLS] = useState(true);
 
   const [msg, setMsg] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
@@ -72,11 +94,22 @@ export const NetworkPage: React.FC<Props> = ({
     runDiag();
   }, []);
 
+  useEffect(() => {
+    if (config?.relayNodes) {
+      setRelayNodes(config.relayNodes);
+    }
+  }, [config?.relayNodes]);
+
   const isPureJava = Boolean(
     server && server.engine !== 'bds' && server.engine !== 'powernukkitx' && !server.crossPlay?.enabled,
   );
   const isCrossPlay = Boolean(server && server.crossPlay?.enabled);
   const isPureBedrock = Boolean(server && (server.engine === 'bds' || server.engine === 'powernukkitx'));
+
+  const wantJavaForServer = !server || (server.engine !== 'bds' && server.engine !== 'powernukkitx');
+  const wantBedrockForServer = Boolean(!server || server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx');
+  const localJavaPort = server?.javaPort || 25565;
+  const localBedrockPort = server?.crossPlay?.enabled ? server.crossPlay.bedrockPort : server?.bedrockPort || 19132;
 
   const copyText = async (key: string, val: string) => {
     await copyTextSafe(val);
@@ -96,14 +129,142 @@ export const NetworkPage: React.FC<Props> = ({
     }
   };
 
+  const probeRelayNodes = async () => {
+    setProbingRelay(true);
+    try {
+      const list = await apiFetch<RelayNodeProbe[]>('/api/network/relay/probe');
+      const map: Record<string, RelayNodeProbe> = {};
+      for (const p of list || []) {
+        map[p.address] = p;
+      }
+      setRelayProbes(map);
+    } catch {
+      // ignore
+    } finally {
+      setProbingRelay(false);
+    }
+  };
+
+  const saveRelayNodes = async (next: RelayNode[]) => {
+    const saved = await apiFetch<RelayNode[]>('/api/network/relay/nodes', {
+      method: 'PUT',
+      body: JSON.stringify({ nodes: next }),
+    });
+    setRelayNodes(saved || []);
+    onRefreshConfig();
+    return saved || [];
+  };
+
+  const addRelayNode = async () => {
+    const addr = newNodeAddr.trim();
+    if (!addr) return;
+    setBusyRelay(true);
+    setMsg('');
+    try {
+      localStorage.setItem('sekailink_relay_addr', addr);
+      const next: RelayNode[] = [
+        ...relayNodes,
+        {
+          id: newNodeId.trim() || addr,
+          address: addr,
+          secret: newNodeSecret.trim(),
+          certPin: newNodePin.trim(),
+          tls: newNodeTLS,
+          enabled: true,
+        },
+      ];
+      await saveRelayNodes(next);
+      setNewNodeAddr('');
+      setNewNodeSecret('');
+      setNewNodePin('');
+      await probeRelayNodes();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : t.relayErr);
+    } finally {
+      setBusyRelay(false);
+    }
+  };
+
+  const toggleNodeEnabled = async (idx: number) => {
+    const next = relayNodes.map((n, i) => (i === idx ? { ...n, enabled: !n.enabled } : n));
+    await saveRelayNodes(next);
+  };
+
+  const deleteRelayNode = async (idx: number) => {
+    const next = relayNodes.filter((_, i) => i !== idx);
+    await saveRelayNodes(next);
+  };
+
+  const autoConnectFastestBridge = async () => {
+    setBusyRelay(true);
+    setMsg('');
+    try {
+      const res = await apiFetch<AutoTunnelResult>('/api/network/tunnel/auto-start', {
+        method: 'POST',
+        body: JSON.stringify({
+          localJavaPort,
+          localBedrockPort,
+          wantJava: wantJavaForServer,
+          wantBedrock: wantBedrockForServer,
+        }),
+      });
+      if (res.provider === 'relay') {
+        setMsg(`${t.relayConnectedBridge} ${res.nodeId || 'SV-Relay'} (${res.latencyMs || 0} ms${res.encrypted ? ' • TLS 1.3' : ''})`);
+      } else {
+        const fallbackNote = res.fallbackReason ? `${t.relayFallbackNoticePrefix} ${res.fallbackReason} → ` : '';
+        setMsg(`${fallbackNote}${res.nodeId || res.provider}: ${res.javaAddress || ''}`);
+      }
+      onRefreshTunnel();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : t.relayErr);
+    } finally {
+      setBusyRelay(false);
+    }
+  };
+
+  const connectSingleNode = async (node: RelayNode) => {
+    setBusyRelay(true);
+    setMsg('');
+    try {
+      const st = await apiFetch<RelayState>('/api/network/relay/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          relayAddr: node.address,
+          secret: node.secret || '',
+          tls: node.tls,
+          certPin: node.certPin || '',
+          localJavaPort,
+          localBedrockPort,
+          wantJava: wantJavaForServer,
+          wantBedrock: wantBedrockForServer,
+        }),
+      });
+      setMsg(`${t.relayConnectedBridge} ${st.nodeId || node.id} (${st.latencyMs || 0} ms)`);
+      onRefreshTunnel();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : t.relayErr);
+    } finally {
+      setBusyRelay(false);
+    }
+  };
+
+  const stopRelay = async () => {
+    setBusyRelay(true);
+    try {
+      await apiFetch('/api/network/relay/stop', { method: 'POST' });
+      onRefreshTunnel();
+    } finally {
+      setBusyRelay(false);
+    }
+  };
+
   const startE4mc = async () => {
     setBusyE4mc(true);
     setMsg('');
     try {
-      const localPort = server?.javaPort || 25565;
       const st = await apiFetch<E4mcState>('/api/network/e4mc/start', {
         method: 'POST',
-        body: JSON.stringify({ localPort }),
+        body: JSON.stringify({ localPort: localJavaPort }),
       });
       setMsg(`${t.e4mcOpenedMsg} ${st.domain} (${st.region} • ${st.latencyMs} ms)`);
       onRefreshTunnel();
@@ -128,10 +289,9 @@ export const NetworkPage: React.FC<Props> = ({
     setBusyBore(true);
     setMsg('');
     try {
-      const localPort = server?.javaPort || 25565;
       const st = await apiFetch<BoreState>('/api/network/bore/start', {
         method: 'POST',
-        body: JSON.stringify({ serverHost: boreHost.trim() || 'bore.pub', localPort }),
+        body: JSON.stringify({ serverHost: boreHost.trim() || 'bore.pub', localPort: localJavaPort }),
       });
       setMsg(`${t.boreOpenedMsg} ${st.address}`);
       onRefreshTunnel();
@@ -149,44 +309,6 @@ export const NetworkPage: React.FC<Props> = ({
       onRefreshTunnel();
     } finally {
       setBusyBore(false);
-    }
-  };
-
-  const startRelay = async () => {
-    setBusyRelay(true);
-    setMsg('');
-    try {
-      localStorage.setItem('sekailink_relay_addr', relayAddr.trim());
-      const wantJava = !server || (server.engine !== 'bds' && server.engine !== 'powernukkitx');
-      const wantBedrock = Boolean(!server || server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx');
-      const localBedrockPort = server?.crossPlay?.enabled ? server.crossPlay.bedrockPort : server?.bedrockPort || 19132;
-      await apiFetch<RelayState>('/api/network/relay/start', {
-        method: 'POST',
-        body: JSON.stringify({
-          relayAddr: relayAddr.trim(),
-          secret: relaySecret,
-          localJavaPort: server?.javaPort || 25565,
-          localBedrockPort,
-          wantJava,
-          wantBedrock,
-        }),
-      });
-      setMsg(t.relayConnectedMsg);
-      onRefreshTunnel();
-    } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : t.relayErr);
-    } finally {
-      setBusyRelay(false);
-    }
-  };
-
-  const stopRelay = async () => {
-    setBusyRelay(true);
-    try {
-      await apiFetch('/api/network/relay/stop', { method: 'POST' });
-      onRefreshTunnel();
-    } finally {
-      setBusyRelay(false);
     }
   };
 
@@ -223,17 +345,16 @@ export const NetworkPage: React.FC<Props> = ({
     setBusyUpnp(true);
     setMsg('');
     try {
-      if (server.engine !== 'bds' && server.engine !== 'powernukkitx') {
+      if (wantJavaForServer) {
         await apiFetch('/api/network/upnp/map', {
           method: 'POST',
           body: JSON.stringify({ port: server.javaPort, protocol: 'TCP', desc: 'MC SekaiLink Java' }),
         });
       }
-      if (server.crossPlay?.enabled || server.engine === 'bds' || server.engine === 'powernukkitx') {
-        const bPort = server.crossPlay?.enabled ? server.crossPlay.bedrockPort : server.bedrockPort;
+      if (wantBedrockForServer) {
         await apiFetch('/api/network/upnp/map', {
           method: 'POST',
-          body: JSON.stringify({ port: bPort, protocol: 'UDP', desc: 'MC SekaiLink Bedrock' }),
+          body: JSON.stringify({ port: localBedrockPort, protocol: 'UDP', desc: 'MC SekaiLink Bedrock' }),
         });
       }
       setMsg(t.upnpSuccessMsg);
@@ -244,20 +365,217 @@ export const NetworkPage: React.FC<Props> = ({
     }
   };
 
-  const toggleRemoteAccess = async () => {
-    if (!config) return;
-    await apiFetch('/api/config', {
-      method: 'PUT',
-      body: JSON.stringify({ remoteEnabled: !config.remoteEnabled }),
-    });
-    onRefreshConfig();
-    setMsg(!config.remoteEnabled ? t.remoteOnMsg : t.remoteOffMsg);
-  };
-
   const pairingUrl = `http://${diag?.localIP || system?.localIP || '127.0.0.1'}:${config?.apiPort || 25580}`;
   const pairingPayload = JSON.stringify({ url: pairingUrl, token: config?.pairingToken || '' });
 
-  const renderE4mcCard = (compact?: boolean) => (
+  const renderRelayCard = () => (
+    <div className="glass-panel rounded-3xl border border-violet-500/30 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Radio className="h-5 w-5 text-violet-400" />
+            <h3 className="text-base font-bold text-white">{t.relayTitle}</h3>
+            <span className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-violet-300">
+              {t.relayBadge}
+            </span>
+            {relay?.running && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] font-bold text-emerald-200">
+                {t.relayConnectedBridge} {relay.nodeId || 'SV-Relay'} • {relay.latencyMs || 0} ms
+                {relay.encrypted ? ' • TLS' : ''}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-slate-400">{t.relayDesc}</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            disabled={probingRelay || relayNodes.length === 0}
+            onClick={probeRelayNodes}
+            className="flex items-center gap-1.5 rounded-2xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-40"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${probingRelay ? 'animate-spin' : ''}`} />
+            {t.relayProbeBtn}
+          </button>
+
+          {!relay?.running ? (
+            <button
+              disabled={busyRelay}
+              onClick={autoConnectFastestBridge}
+              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:brightness-110 disabled:opacity-50"
+            >
+              {busyRelay ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+              {t.relayAutoBtn}
+            </button>
+          ) : (
+            <button
+              disabled={busyRelay}
+              onClick={stopRelay}
+              className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
+            >
+              <Square className="h-4 w-4 fill-current" />
+              {t.relayDisconnectBtn}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Add VDS node form */}
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-12">
+        <input
+          value={newNodeId}
+          onChange={(e) => setNewNodeId(e.target.value)}
+          placeholder={t.relayNodeIdPlaceholder}
+          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
+        />
+        <input
+          value={newNodeAddr}
+          onChange={(e) => setNewNodeAddr(e.target.value)}
+          placeholder={t.relayNodeAddrPlaceholder}
+          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-3"
+        />
+        <input
+          value={newNodeSecret}
+          onChange={(e) => setNewNodeSecret(e.target.value)}
+          type="password"
+          placeholder={t.relayNodeSecretPlaceholder}
+          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
+        />
+        <input
+          value={newNodePin}
+          onChange={(e) => setNewNodePin(e.target.value)}
+          placeholder={t.relayNodePinPlaceholder}
+          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
+        />
+        <label className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-slate-950/70 px-2.5 py-2 text-xs text-slate-300 lg:col-span-1">
+          <input
+            type="checkbox"
+            checked={newNodeTLS}
+            onChange={(e) => setNewNodeTLS(e.target.checked)}
+            className="h-3.5 w-3.5 accent-violet-500"
+          />
+          <span>TLS</span>
+        </label>
+        <button
+          disabled={busyRelay || !newNodeAddr.trim()}
+          onClick={addRelayNode}
+          className="flex items-center justify-center gap-1.5 rounded-xl bg-violet-500/25 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-500/35 disabled:opacity-40 lg:col-span-2"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t.relayAddNodeBtn}
+        </button>
+      </div>
+
+      {/* Saved VDS Node List */}
+      {relayNodes.length === 0 ? (
+        <div className="mt-3 rounded-xl border border-dashed border-white/15 bg-slate-950/40 px-3.5 py-2.5 text-xs text-slate-400">
+          {t.relayNoNodesHint}
+        </div>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {relayNodes.map((node, idx) => {
+            const addrKey = node.address.includes(':') ? node.address : `${node.address}:25590`;
+            const probe = relayProbes[addrKey] || relayProbes[node.address];
+            const isConnectedThis = Boolean(relay?.running && relay.relayAddr === addrKey);
+            return (
+              <div
+                key={`${node.id}-${node.address}-${idx}`}
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-2xl border px-3.5 py-2.5 text-xs ${
+                  isConnectedThis
+                    ? 'border-emerald-500/40 bg-emerald-500/10'
+                    : 'border-white/10 bg-slate-950/60'
+                }`}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={node.enabled}
+                    onChange={() => toggleNodeEnabled(idx)}
+                    className="h-3.5 w-3.5 accent-emerald-500"
+                  />
+                  <span className={`font-mono font-bold ${node.enabled ? 'text-white' : 'text-slate-500 line-through'}`}>
+                    {probe?.nodeId || node.id}
+                  </span>
+                  <span className="font-mono text-slate-400">{node.address}</span>
+                  <span className="inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-300">
+                    <Lock className="h-2.5 w-2.5 text-violet-300" />
+                    {node.tls ? t.relayEncryptedBadge : t.relayPlainBadge}
+                  </span>
+                  {probe && (
+                    probe.online ? (
+                      <PingPill label={probe.nodeId || node.id} ms={probe.latencyMs || 1} />
+                    ) : (
+                      <span className="rounded-full border border-rose-500/35 bg-rose-500/15 px-2 py-0.5 text-[10px] text-rose-300">
+                        {t.relayOfflineBadge}
+                      </span>
+                    )
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    disabled={busyRelay || isConnectedThis}
+                    onClick={() => connectSingleNode(node)}
+                    className="rounded-xl bg-violet-500/20 px-3 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
+                  >
+                    {t.relayConnectBtn}
+                  </button>
+                  <button
+                    onClick={() => deleteRelayNode(idx)}
+                    title={t.relayDeleteNodeTitle}
+                    className="rounded-xl bg-rose-500/15 p-1.5 text-rose-300 hover:bg-rose-500/25"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-2.5 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-[11px] text-slate-400">
+        {t.relayCmdHint} <span className="text-violet-300">sekailink-relay --node-id SV-Oracle --public-host VDS_IP --secret GIZLI_ANAHTAR</span>
+      </div>
+
+      {relay?.running && (relay.javaAddress || relay.bedrockAddress) && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {relay.javaAddress && (
+            <CopyBox
+              label={`${t.relayJavaCopy} (${relay.nodeId || 'SV-Relay'} • ${relay.latencyMs || 0} ms)`}
+              value={relay.javaAddress}
+              copied={copiedKey === 'rjava'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
+              onCopy={() => copyText('rjava', relay.javaAddress)}
+              onQr={() => setQrModal({ title: t.relayJavaQrTitle, subtitle: t.playitQrJavaSub, value: relay.javaAddress })}
+            />
+          )}
+          {relay.bedrockAddress && (
+            <CopyBox
+              label={`${t.relayBedrockCopy} (${relay.nodeId || 'SV-Relay'} • ${relay.latencyMs || 0} ms)`}
+              value={relay.bedrockAddress}
+              copied={copiedKey === 'rbed'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
+              onCopy={() => copyText('rbed', relay.bedrockAddress)}
+              onQr={() => setQrModal({ title: t.relayBedrockQrTitle, subtitle: t.playitQrBedrockSub, value: relay.bedrockAddress })}
+            />
+          )}
+        </div>
+      )}
+
+      {relay?.lastError && !relay.running && (
+        <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
+          {relay.lastError}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderE4mcCard = () => (
     <div className="glass-panel rounded-3xl border border-emerald-500/25 p-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
@@ -299,14 +617,12 @@ export const NetworkPage: React.FC<Props> = ({
         </div>
       </div>
 
-      {!compact && (
-        <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2 text-[11px] text-emerald-200">
-          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
-          <span>
-            {t.e4mcHostTipPrefix} <code className="font-mono text-white">localhost:{server?.javaPort || 25565}</code> {t.e4mcHostTipSuffix}
-          </span>
-        </div>
-      )}
+      <div className="mt-3 flex items-start gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2 text-[11px] text-emerald-200">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+        <span>
+          {t.e4mcHostTipPrefix} <code className="font-mono text-white">localhost:{localJavaPort}</code> {t.e4mcHostTipSuffix}
+        </span>
+      </div>
 
       {e4mc?.running && e4mc.domain && (
         <div className="mt-4">
@@ -382,7 +698,7 @@ export const NetworkPage: React.FC<Props> = ({
             disabled={Boolean(bore?.running)}
             className="w-48 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 font-mono text-xs text-white outline-none focus:border-emerald-500 disabled:opacity-60"
           />
-          <span className="text-slate-500">{t.boreLocalPortLabel} {server?.javaPort || 25565}</span>
+          <span className="text-slate-500">{t.boreLocalPortLabel} {localJavaPort}</span>
         </div>
       )}
 
@@ -506,95 +822,15 @@ export const NetworkPage: React.FC<Props> = ({
     </div>
   );
 
-  const renderRelayCard = () => (
-    <div className="glass-panel rounded-3xl p-5">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Radio className="h-5 w-5 text-violet-400" />
-            <h3 className="text-base font-bold text-white">{t.relayTitle}</h3>
-            <span className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-violet-300">
-              {t.relayBadge}
-            </span>
-          </div>
-          <p className="mt-1 text-xs text-slate-400">{t.relayDesc}</p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {!relay?.running ? (
-            <button
-              disabled={busyRelay || !relayAddr.trim()}
-              onClick={startRelay}
-              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:brightness-110 disabled:opacity-50"
-            >
-              {busyRelay ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              {t.relayConnectBtn}
-            </button>
-          ) : (
-            <button
-              disabled={busyRelay}
-              onClick={stopRelay}
-              className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
-            >
-              <Square className="h-4 w-4 fill-current" />
-              {t.relayDisconnectBtn}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="mt-3 grid gap-2.5 sm:grid-cols-2">
-        <input
-          value={relayAddr}
-          onChange={(e) => setRelayAddr(e.target.value)}
-          disabled={Boolean(relay?.running)}
-          placeholder={t.relayAddrPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 disabled:opacity-60"
-        />
-        <input
-          value={relaySecret}
-          onChange={(e) => setRelaySecret(e.target.value)}
-          disabled={Boolean(relay?.running)}
-          type="password"
-          placeholder={t.relaySecretPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 disabled:opacity-60"
-        />
-      </div>
-
-      <div className="mt-2.5 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-[11px] text-slate-400">
-        {t.relayCmdHint} <span className="text-violet-300">sekailink-relay --listen :25590 --public-host PUBLIC_IP_OR_DOMAIN</span>
-      </div>
-
-      {relay?.running && (relay.javaAddress || relay.bedrockAddress) && (
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {relay.javaAddress && (
-            <CopyBox
-              label={t.relayJavaCopy}
-              value={relay.javaAddress}
-              copied={copiedKey === 'rjava'}
-              copyLabel={t.copy}
-              copiedLabel={t.copied}
-              qrTitle={t.qrCodeTitle}
-              onCopy={() => copyText('rjava', relay.javaAddress)}
-              onQr={() => setQrModal({ title: t.relayJavaQrTitle, subtitle: t.playitQrJavaSub, value: relay.javaAddress })}
-            />
-          )}
-          {relay.bedrockAddress && (
-            <CopyBox
-              label={t.relayBedrockCopy}
-              value={relay.bedrockAddress}
-              copied={copiedKey === 'rbed'}
-              copyLabel={t.copy}
-              copiedLabel={t.copied}
-              qrTitle={t.qrCodeTitle}
-              onCopy={() => copyText('rbed', relay.bedrockAddress)}
-              onQr={() => setQrModal({ title: t.relayBedrockQrTitle, subtitle: t.playitQrBedrockSub, value: relay.bedrockAddress })}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
+  const toggleRemoteAccess = async () => {
+    if (!config) return;
+    await apiFetch('/api/config', {
+      method: 'PUT',
+      body: JSON.stringify({ remoteEnabled: !config.remoteEnabled }),
+    });
+    onRefreshConfig();
+    setMsg(!config.remoteEnabled ? t.remoteOnMsg : t.remoteOffMsg);
+  };
 
   return (
     <div className="space-y-4">
@@ -640,7 +876,9 @@ export const NetworkPage: React.FC<Props> = ({
         ) : null}
       </div>
 
-      {/* Server-Aware Tunnel Section */}
+      {/* Primary VDS Bridge Pool & Server-Aware Tunnels */}
+      {renderRelayCard()}
+
       {isPureJava ? (
         <>
           {renderE4mcCard()}
@@ -656,7 +894,6 @@ export const NetworkPage: React.FC<Props> = ({
               <div className="space-y-4 border-t border-white/10 p-4">
                 {renderPlayitCard()}
                 {renderBoreCard()}
-                {renderRelayCard()}
               </div>
             )}
           </div>
@@ -669,7 +906,6 @@ export const NetworkPage: React.FC<Props> = ({
           </div>
           {renderPlayitCard()}
           {isCrossPlay && renderE4mcCard()}
-          {renderRelayCard()}
           {isCrossPlay && (
             <div className="glass-card rounded-2xl">
               <button

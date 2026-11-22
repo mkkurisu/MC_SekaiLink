@@ -62,14 +62,47 @@ type ServerInstance struct {
 }
 
 type AppConfig struct {
-	DataDir         string `json:"dataDir"`
-	APIPort         int    `json:"apiPort"`
-	BindAddress     string `json:"bindAddress"`
-	RemoteEnabled   bool   `json:"remoteEnabled"`
-	PairingToken    string `json:"pairingToken"`
-	Language        string `json:"language"`
-	JavaPath        string `json:"javaPath,omitempty"`
-	PlayitAutoStart bool   `json:"playitAutoStart"`
+	DataDir         string      `json:"dataDir"`
+	APIPort         int         `json:"apiPort"`
+	BindAddress     string      `json:"bindAddress"`
+	RemoteEnabled   bool        `json:"remoteEnabled"`
+	PairingToken    string      `json:"pairingToken"`
+	Language        string      `json:"language"`
+	JavaPath        string      `json:"javaPath,omitempty"`
+	PlayitAutoStart bool        `json:"playitAutoStart"`
+	RelayNodes      []RelayNode `json:"relayNodes,omitempty"`
+}
+
+type RelayNode struct {
+	ID      string `json:"id"`
+	Address string `json:"address"`
+	Secret  string `json:"secret,omitempty"`
+	TLS     bool   `json:"tls"`
+	CertPin string `json:"certPin,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+
+type RelayNodeProbe struct {
+	ID        string `json:"id"`
+	Address   string `json:"address"`
+	Online    bool   `json:"online"`
+	NodeID    string `json:"nodeId,omitempty"`
+	LatencyMs int64  `json:"latencyMs,omitempty"`
+	Encrypted bool   `json:"encrypted,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type AutoTunnelResult struct {
+	Provider       string      `json:"provider"` // "relay", "e4mc", "bore"
+	NodeID         string      `json:"nodeId,omitempty"`
+	LatencyMs      int64       `json:"latencyMs,omitempty"`
+	Encrypted      bool        `json:"encrypted,omitempty"`
+	JavaAddress    string      `json:"javaAddress,omitempty"`
+	BedrockAddress string      `json:"bedrockAddress,omitempty"`
+	FallbackReason string      `json:"fallbackReason,omitempty"`
+	Relay          *RelayState `json:"relay,omitempty"`
+	E4mc           *E4mcState  `json:"e4mc,omitempty"`
+	Bore           *BoreState  `json:"bore,omitempty"`
 }
 
 type ConsoleLine struct {
@@ -272,6 +305,8 @@ type E4mcState struct {
 
 type RelayState struct {
 	Running          bool   `json:"running"`
+	NodeID           string `json:"nodeId,omitempty"`
+	Encrypted        bool   `json:"encrypted,omitempty"`
 	RelayAddr        string `json:"relayAddr"`
 	LocalJavaPort    int    `json:"localJavaPort"`
 	LocalBedrockPort int    `json:"localBedrockPort"`

@@ -1,13 +1,24 @@
 package network
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,11 +27,17 @@ import (
 	"github.com/MC_SekaiLink/mc-sekailink/internal/models"
 )
 
-const defaultRelayPort = "25590"
+const (
+	defaultRelayPort      = "25590"
+	defaultRelayNodeID    = "SV-Relay"
+	relayKeepalivePeriod  = 25 * time.Second
+)
 
 type relayControlMsg struct {
 	Type        string `json:"type"`
 	Secret      string `json:"secret,omitempty"`
+	NodeID      string `json:"nodeId,omitempty"`
+	Encrypted   bool   `json:"encrypted,omitempty"`
 	WantJava    bool   `json:"wantJava,omitempty"`
 	WantBedrock bool   `json:"wantBedrock,omitempty"`
 	SessionID   string `json:"sessionId,omitempty"`
@@ -31,10 +48,130 @@ type relayControlMsg struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// --- RelayServer (Open-Source Self-Hostable TCP + UDP Relay) ---
+// RelayServerOptions configures a self-hosted SekaiLink VDS bridge node.
+type RelayServerOptions struct {
+	NodeID     string
+	PublicHost string
+	Secret     string
+	PortMin    int
+	PortMax    int
+	TLSConfig  *tls.Config
+	AllowPlain bool
+}
+
+// RelayClientOptions configures an outbound bridge connection from MC SekaiLink.
+type RelayClientOptions struct {
+	RelayAddr        string
+	Secret           string
+	TLS              bool
+	CertPin          string
+	LocalJavaPort    int
+	LocalBedrockPort int
+	WantJava         bool
+	WantBedrock      bool
+}
+
+// GenerateSelfSignedRelayTLS creates an in-memory Ed25519 TLS 1.3 certificate and returns
+// its TLS config alongside its uppercase SHA-256 hex fingerprint for optional client pinning.
+func GenerateSelfSignedRelayTLS() (*tls.Config, string, error) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, "", err
+	}
+	derBytes, err := buildSelfSignedRelayCertDER(priv)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(derBytes)
+	pin := strings.ToUpper(hex.EncodeToString(sum[:]))
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{derBytes},
+			PrivateKey:  priv,
+		}},
+		MinVersion: tls.VersionTLS13,
+	}
+	return cfg, pin, nil
+}
+
+// LoadOrCreateRelayTLS loads a persistent TLS keypair from certDir or creates and persists a new
+// Ed25519 TLS 1.3 certificate so VDS restarts preserve the exact same CertPin.
+func LoadOrCreateRelayTLS(certDir string) (*tls.Config, string, error) {
+	if strings.TrimSpace(certDir) == "" {
+		return GenerateSelfSignedRelayTLS()
+	}
+	certPath := filepath.Join(certDir, "relay-cert.pem")
+	keyPath := filepath.Join(certDir, "relay-key.pem")
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil && len(cert.Certificate) > 0 {
+		sum := sha256.Sum256(cert.Certificate[0])
+		pin := strings.ToUpper(hex.EncodeToString(sum[:]))
+		cfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS13,
+		}
+		return cfg, pin, nil
+	}
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, "", err
+	}
+	derBytes, err := buildSelfSignedRelayCertDER(priv)
+	if err != nil {
+		return nil, "", err
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(certDir, 0o700); err != nil {
+		return nil, "", err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})
+	_ = os.WriteFile(certPath, certPEM, 0o644)
+	_ = os.WriteFile(keyPath, keyPEM, 0o600)
+
+	sum := sha256.Sum256(derBytes)
+	pin := strings.ToUpper(hex.EncodeToString(sum[:]))
+	_ = os.WriteFile(filepath.Join(certDir, "relay.pin"), []byte(pin+"\n"), 0o644)
+	cfg := &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{derBytes},
+			PrivateKey:  priv,
+		}},
+		MinVersion: tls.VersionTLS13,
+	}
+	return cfg, pin, nil
+}
+
+func buildSelfSignedRelayCertDER(priv ed25519.PrivateKey) ([]byte, error) {
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "MC-SekaiLink-Relay",
+			Organization: []string{"MC SekaiLink"},
+		},
+		NotBefore:             now.Add(-1 * time.Hour),
+		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	return x509.CreateCertificate(rand.Reader, tmpl, tmpl, priv.Public(), priv)
+}
+
+// --- RelayServer (Open-Source Self-Hostable Encrypted TCP + UDP Bridge) ---
 
 type relaySession struct {
 	id          string
+	encrypted   bool
 	ctrlConn    net.Conn
 	ctrlMu      sync.Mutex
 	tcpListener net.Listener
@@ -81,8 +218,13 @@ func (rs *relaySession) close(srv *RelayServer) {
 }
 
 type RelayServer struct {
+	nodeID     string
 	publicHost string
 	secret     string
+	portMin    int
+	portMax    int
+	tlsConfig  *tls.Config
+	allowPlain bool
 
 	mu       sync.Mutex
 	ln       net.Listener
@@ -90,9 +232,31 @@ type RelayServer struct {
 }
 
 func NewRelayServer(publicHost, secret string) *RelayServer {
+	return NewRelayServerWithOptions(RelayServerOptions{
+		NodeID:     defaultRelayNodeID,
+		PublicHost: publicHost,
+		Secret:     secret,
+		AllowPlain: true,
+	})
+}
+
+func NewRelayServerWithOptions(opts RelayServerOptions) *RelayServer {
+	nodeID := strings.TrimSpace(opts.NodeID)
+	if nodeID == "" {
+		nodeID = defaultRelayNodeID
+	}
+	allowPlain := opts.AllowPlain
+	if opts.TLSConfig == nil {
+		allowPlain = true
+	}
 	return &RelayServer{
-		publicHost: strings.TrimSpace(publicHost),
-		secret:     secret,
+		nodeID:     nodeID,
+		publicHost: strings.TrimSpace(opts.PublicHost),
+		secret:     opts.Secret,
+		portMin:    opts.PortMin,
+		portMax:    opts.PortMax,
+		tlsConfig:  opts.TLSConfig,
+		allowPlain: allowPlain,
 		sessions:   make(map[string]*relaySession),
 	}
 }
@@ -136,7 +300,64 @@ func (s *RelayServer) Close() error {
 	return nil
 }
 
-func (s *RelayServer) handleConn(conn net.Conn) {
+type peekConn struct {
+	net.Conn
+	prefix  byte
+	hasByte bool
+}
+
+func (c *peekConn) Read(p []byte) (int, error) {
+	if c.hasByte && len(p) > 0 {
+		p[0] = c.prefix
+		c.hasByte = false
+		return 1, nil
+	}
+	return c.Conn.Read(p)
+}
+
+func (s *RelayServer) acceptMaybeTLS(raw net.Conn) (net.Conn, bool, error) {
+	tuneTCPConn(raw)
+	if s.tlsConfig == nil {
+		return raw, false, nil
+	}
+	var first [1]byte
+	_ = raw.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, err := io.ReadFull(raw, first[:])
+	_ = raw.SetReadDeadline(time.Time{})
+	if err != nil {
+		raw.Close()
+		return nil, false, err
+	}
+	pc := &peekConn{Conn: raw, prefix: first[0], hasByte: true}
+	if first[0] == 0x16 {
+		tlsConn := tls.Server(pc, s.tlsConfig)
+		_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+		if err := tlsConn.Handshake(); err != nil {
+			tlsConn.Close()
+			return nil, false, err
+		}
+		_ = tlsConn.SetDeadline(time.Time{})
+		return tlsConn, true, nil
+	}
+	if !s.allowPlain {
+		if first[0] == '{' {
+			_ = writeLineJSON(pc, relayControlMsg{
+				Type:  "error",
+				Error: "bu VDS koprusu TLS 1.3 sifreleme gerektirir",
+			})
+		}
+		pc.Close()
+		return nil, false, fmt.Errorf("plaintext rejected by TLS relay")
+	}
+	return pc, false, nil
+}
+
+func (s *RelayServer) handleConn(raw net.Conn) {
+	conn, isTLS, err := s.acceptMaybeTLS(raw)
+	if err != nil {
+		return
+	}
+
 	line, err := readLineRaw(conn, 10*time.Second)
 	if err != nil {
 		conn.Close()
@@ -149,8 +370,15 @@ func (s *RelayServer) handleConn(conn net.Conn) {
 	}
 
 	switch msg.Type {
+	case "ping":
+		_ = writeLineJSON(conn, relayControlMsg{
+			Type:      "pong",
+			NodeID:    s.nodeID,
+			Encrypted: isTLS,
+		})
+		conn.Close()
 	case "hello":
-		s.handleHello(conn, msg)
+		s.handleHello(conn, msg, isTLS)
 	case "tcp_accept":
 		s.handleTCPAccept(conn, msg)
 	case "udp_attach":
@@ -160,8 +388,8 @@ func (s *RelayServer) handleConn(conn net.Conn) {
 	}
 }
 
-func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg) {
-	if s.secret != "" && hello.Secret != s.secret {
+func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg, isTLS bool) {
+	if s.secret != "" && subtle.ConstantTimeCompare([]byte(hello.Secret), []byte(s.secret)) != 1 {
 		_ = writeLineJSON(conn, relayControlMsg{Type: "error", Error: "gecersiz relay gizli anahtari"})
 		conn.Close()
 		return
@@ -169,13 +397,14 @@ func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg) {
 
 	sess := &relaySession{
 		id:         randomHexID(8),
+		encrypted:  isTLS,
 		ctrlConn:   conn,
 		pendingTCP: make(map[string]net.Conn),
 	}
 
 	var javaPort, bedrockPort int
 	if hello.WantJava {
-		ln, err := net.Listen("tcp", ":0")
+		ln, err := listenTCPInRange(s.portMin, s.portMax)
 		if err != nil {
 			_ = writeLineJSON(conn, relayControlMsg{Type: "error", Error: err.Error()})
 			conn.Close()
@@ -185,7 +414,7 @@ func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg) {
 		javaPort = ln.Addr().(*net.TCPAddr).Port
 	}
 	if hello.WantBedrock {
-		uc, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+		uc, err := listenUDPInRange(s.portMin, s.portMax)
 		if err != nil {
 			if sess.tcpListener != nil {
 				_ = sess.tcpListener.Close()
@@ -214,6 +443,8 @@ func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg) {
 	if err := sess.sendControl(relayControlMsg{
 		Type:        "ready",
 		SessionID:   sess.id,
+		NodeID:      s.nodeID,
+		Encrypted:   isTLS,
 		PublicHost:  host,
 		JavaPort:    javaPort,
 		BedrockPort: bedrockPort,
@@ -229,11 +460,16 @@ func (s *RelayServer) handleHello(conn net.Conn, hello relayControlMsg) {
 		go s.acceptBedrockUDPLoop(sess)
 	}
 
-	// Keep control connection alive until closed
+	// Keep control connection alive and reply to NAT keepalives until closed.
 	for {
-		if _, err := readLineRaw(conn, 0); err != nil {
+		rawLine, err := readLineRaw(conn, 90*time.Second)
+		if err != nil {
 			sess.close(s)
 			return
+		}
+		var ctrl relayControlMsg
+		if json.Unmarshal(rawLine, &ctrl) == nil && ctrl.Type == "keepalive" {
+			_ = sess.sendControl(relayControlMsg{Type: "keepalive_ack"})
 		}
 	}
 }
@@ -244,6 +480,7 @@ func (s *RelayServer) acceptJavaLoop(sess *relaySession) {
 		if err != nil {
 			return
 		}
+		tuneTCPConn(playerConn)
 		connID := randomHexID(6)
 		sess.pendingMu.Lock()
 		sess.pendingTCP[connID] = playerConn
@@ -336,11 +573,12 @@ func (s *RelayServer) handleUDPAttach(stream net.Conn, msg relayControlMsg) {
 // --- RelayManager (Client embedded inside MC SekaiLink) ---
 
 type RelayManager struct {
-	mu        sync.Mutex
-	ctrlConn  net.Conn
-	udpStream net.Conn
-	state     models.RelayState
-	stopSeq   uint64
+	mu          sync.Mutex
+	ctrlWriteMu sync.Mutex
+	ctrlConn    net.Conn
+	udpStream   net.Conn
+	state       models.RelayState
+	stopSeq     uint64
 }
 
 func NewRelayManager() *RelayManager {
@@ -354,70 +592,79 @@ func (rm *RelayManager) Status() models.RelayState {
 }
 
 func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedrockPort int, wantJava, wantBedrock bool) (models.RelayState, error) {
-	relayAddr = strings.TrimSpace(relayAddr)
+	return rm.StartWithOptions(RelayClientOptions{
+		RelayAddr:        relayAddr,
+		Secret:           secret,
+		TLS:              false,
+		LocalJavaPort:    localJavaPort,
+		LocalBedrockPort: localBedrockPort,
+		WantJava:         wantJava,
+		WantBedrock:      wantBedrock,
+	})
+}
+
+func (rm *RelayManager) StartWithOptions(opts RelayClientOptions) (models.RelayState, error) {
+	relayAddr := normalizeRelayAddr(opts.RelayAddr)
 	if relayAddr == "" {
-		return rm.Status(), fmt.Errorf("relay sunucu adresi gerekli (orn: relay.example.com:25590)")
+		return rm.Status(), fmt.Errorf("relay sunucu adresi gerekli (orn: vds.example.com:25590)")
 	}
-	if _, _, err := net.SplitHostPort(relayAddr); err != nil {
-		relayAddr = net.JoinHostPort(relayAddr, defaultRelayPort)
-	}
-	if !wantJava && !wantBedrock {
+	if !opts.WantJava && !opts.WantBedrock {
 		return rm.Status(), fmt.Errorf("en az Java veya Bedrock aktarimi secilmelidir")
 	}
 
 	_ = rm.Stop()
 
-	dialStart := time.Now()
-	conn, err := net.DialTimeout("tcp", relayAddr, 5*time.Second)
+	conn, isTLS, err := dialRelayConn(relayAddr, opts.TLS, opts.CertPin, 5*time.Second)
 	if err != nil {
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 	}
-	latencyMs := time.Since(dialStart).Milliseconds()
-	tuneTCPConn(conn)
 
+	rttStart := time.Now()
 	if err := writeLineJSON(conn, relayControlMsg{
 		Type:        "hello",
-		Secret:      secret,
-		WantJava:    wantJava,
-		WantBedrock: wantBedrock,
+		Secret:      opts.Secret,
+		WantJava:    opts.WantJava,
+		WantBedrock: opts.WantBedrock,
 	}); err != nil {
 		conn.Close()
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 	}
 
 	line, err := readLineRaw(conn, 5*time.Second)
 	if err != nil {
 		conn.Close()
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 	}
+	latencyMs := time.Since(rttStart).Milliseconds()
+
 	var ready relayControlMsg
 	if err := json.Unmarshal(line, &ready); err != nil {
 		conn.Close()
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 	}
 	if ready.Type == "error" {
 		conn.Close()
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, fmt.Errorf("%s", ready.Error))
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, fmt.Errorf("%s", ready.Error))
 	}
 	if ready.Type != "ready" {
 		conn.Close()
-		return rm.failState(relayAddr, localJavaPort, localBedrockPort, fmt.Errorf("beklenmeyen relay yaniti: %s", ready.Type))
+		return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, fmt.Errorf("beklenmeyen relay yaniti: %s", ready.Type))
 	}
 
 	var javaAddr, bedrockAddr string
-	if wantJava && ready.JavaPort > 0 {
+	if opts.WantJava && ready.JavaPort > 0 {
 		javaAddr = net.JoinHostPort(ready.PublicHost, strconv.Itoa(ready.JavaPort))
 	}
-	if wantBedrock && ready.BedrockPort > 0 {
+	if opts.WantBedrock && ready.BedrockPort > 0 {
 		bedrockAddr = net.JoinHostPort(ready.PublicHost, strconv.Itoa(ready.BedrockPort))
 	}
 
 	var udpStream net.Conn
-	if wantBedrock && ready.BedrockPort > 0 {
-		us, err := net.DialTimeout("tcp", relayAddr, 5*time.Second)
+	if opts.WantBedrock && ready.BedrockPort > 0 {
+		us, _, err := dialRelayConn(relayAddr, opts.TLS, opts.CertPin, 5*time.Second)
 		if err != nil {
 			conn.Close()
-			return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+			return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 		}
 		if err := writeLineJSON(us, relayControlMsg{
 			Type:      "udp_attach",
@@ -425,9 +672,18 @@ func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedr
 		}); err != nil {
 			us.Close()
 			conn.Close()
-			return rm.failState(relayAddr, localJavaPort, localBedrockPort, err)
+			return rm.failState(relayAddr, opts.LocalJavaPort, opts.LocalBedrockPort, err)
 		}
 		udpStream = us
+	}
+
+	nodeID := strings.TrimSpace(ready.NodeID)
+	if nodeID == "" {
+		if h, _, err := net.SplitHostPort(relayAddr); err == nil && h != "" {
+			nodeID = h
+		} else {
+			nodeID = defaultRelayNodeID
+		}
 	}
 
 	rm.mu.Lock()
@@ -437,9 +693,11 @@ func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedr
 	rm.udpStream = udpStream
 	rm.state = models.RelayState{
 		Running:          true,
+		NodeID:           nodeID,
+		Encrypted:        isTLS || ready.Encrypted,
 		RelayAddr:        relayAddr,
-		LocalJavaPort:    localJavaPort,
-		LocalBedrockPort: localBedrockPort,
+		LocalJavaPort:    opts.LocalJavaPort,
+		LocalBedrockPort: opts.LocalBedrockPort,
 		JavaAddress:      javaAddr,
 		BedrockAddress:   bedrockAddr,
 		LatencyMs:        latencyMs,
@@ -447,11 +705,194 @@ func (rm *RelayManager) Start(relayAddr, secret string, localJavaPort, localBedr
 	st := rm.state
 	rm.mu.Unlock()
 
-	go rm.controlLoop(conn, seq, relayAddr, ready.SessionID, localJavaPort)
+	go rm.controlLoop(conn, seq, relayAddr, opts.TLS, opts.CertPin, ready.SessionID, opts.LocalJavaPort)
 	if udpStream != nil {
-		go rm.udpLoop(udpStream, seq, localBedrockPort)
+		go rm.udpLoop(udpStream, seq, opts.LocalBedrockPort)
 	}
 	return st, nil
+}
+
+// StartBestNode probes all enabled VDS bridge nodes in parallel and connects to the lowest-latency online node.
+func (rm *RelayManager) StartBestNode(
+	nodes []models.RelayNode,
+	localJavaPort, localBedrockPort int,
+	wantJava, wantBedrock bool,
+) (models.RelayState, []models.RelayNodeProbe, error) {
+	probes := ProbeRelayNodes(nodes)
+	if len(probes) == 0 {
+		return rm.Status(), probes, fmt.Errorf("etkinlestirilmis VDS koprusu yok")
+	}
+
+	byID := make(map[string]models.RelayNode, len(nodes))
+	for _, n := range nodes {
+		if n.Enabled && strings.TrimSpace(n.Address) != "" {
+			byID[normalizeRelayAddr(n.Address)] = n
+		}
+	}
+
+	var lastErr error
+	for _, p := range probes {
+		if !p.Online {
+			if lastErr == nil && p.Error != "" {
+				lastErr = fmt.Errorf("%s: %s", p.Address, p.Error)
+			}
+			continue
+		}
+		node, ok := byID[normalizeRelayAddr(p.Address)]
+		if !ok {
+			continue
+		}
+		st, err := rm.StartWithOptions(RelayClientOptions{
+			RelayAddr:        node.Address,
+			Secret:           node.Secret,
+			TLS:              node.TLS,
+			CertPin:          node.CertPin,
+			LocalJavaPort:    localJavaPort,
+			LocalBedrockPort: localBedrockPort,
+			WantJava:         wantJava,
+			WantBedrock:      wantBedrock,
+		})
+		if err == nil {
+			if st.NodeID == "" && strings.TrimSpace(node.ID) != "" {
+				rm.mu.Lock()
+				rm.state.NodeID = node.ID
+				st = rm.state
+				rm.mu.Unlock()
+			}
+			return st, probes, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("hicbir VDS koprusune ulasilamadi")
+	}
+	return rm.Status(), probes, lastErr
+}
+
+// ProbeRelayNodes tests all enabled relay nodes concurrently and sorts online lowest-ping nodes first.
+func ProbeRelayNodes(nodes []models.RelayNode) []models.RelayNodeProbe {
+	var enabled []models.RelayNode
+	for _, n := range nodes {
+		if n.Enabled && strings.TrimSpace(n.Address) != "" {
+			enabled = append(enabled, n)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+	results := make([]models.RelayNodeProbe, len(enabled))
+	var wg sync.WaitGroup
+	for i, n := range enabled {
+		wg.Add(1)
+		go func(idx int, node models.RelayNode) {
+			defer wg.Done()
+			results[idx] = ProbeRelayNode(node, 3*time.Second)
+		}(i, n)
+	}
+	wg.Wait()
+
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Online != results[j].Online {
+			return results[i].Online
+		}
+		return results[i].LatencyMs < results[j].LatencyMs
+	})
+	return results
+}
+
+// ProbeRelayNode dials a VDS bridge, checks optional CertPin/TLS, and measures 1-RTT control ping.
+func ProbeRelayNode(node models.RelayNode, timeout time.Duration) models.RelayNodeProbe {
+	addr := normalizeRelayAddr(node.Address)
+	out := models.RelayNodeProbe{
+		ID:      node.ID,
+		Address: addr,
+	}
+	if addr == "" {
+		out.Error = "bos adres"
+		return out
+	}
+	conn, isTLS, err := dialRelayConn(addr, node.TLS, node.CertPin, timeout)
+	if err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	defer conn.Close()
+
+	t0 := time.Now()
+	if err := writeLineJSON(conn, relayControlMsg{Type: "ping"}); err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	line, err := readLineRaw(conn, timeout)
+	if err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	rtt := time.Since(t0).Milliseconds()
+	if rtt < 1 {
+		rtt = 1
+	}
+
+	var pong relayControlMsg
+	if err := json.Unmarshal(line, &pong); err != nil {
+		out.Error = err.Error()
+		return out
+	}
+	if pong.Type == "error" {
+		out.Error = pong.Error
+		return out
+	}
+	out.Online = true
+	out.LatencyMs = rtt
+	out.Encrypted = isTLS || pong.Encrypted
+	out.NodeID = pong.NodeID
+	if out.NodeID == "" {
+		out.NodeID = node.ID
+	}
+	return out
+}
+
+func dialRelayConn(addr string, useTLS bool, certPin string, timeout time.Duration) (net.Conn, bool, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	raw, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, false, err
+	}
+	tuneTCPConn(raw)
+	if !useTLS {
+		return raw, false, nil
+	}
+
+	cleanPin := strings.ToUpper(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(certPin), ":", ""), "-", ""))
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: true, // Verified via CertPin when provided; allows zero-config self-signed VDS certs.
+		MinVersion:         tls.VersionTLS13,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if cleanPin == "" {
+				return nil
+			}
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("sunucu sertifikasi sunmadi")
+			}
+			sum := sha256.Sum256(cs.PeerCertificates[0].Raw)
+			gotPin := strings.ToUpper(hex.EncodeToString(sum[:]))
+			if subtle.ConstantTimeCompare([]byte(gotPin), []byte(cleanPin)) != 1 {
+				return fmt.Errorf("TLS sertifika parmak izi (CertPin) uyusmuyor")
+			}
+			return nil
+		},
+	}
+	tlsConn := tls.Client(raw, tlsCfg)
+	_ = tlsConn.SetDeadline(time.Now().Add(timeout))
+	if err := tlsConn.Handshake(); err != nil {
+		tlsConn.Close()
+		return nil, false, err
+	}
+	_ = tlsConn.SetDeadline(time.Time{})
+	return tlsConn, true, nil
 }
 
 func (rm *RelayManager) failState(relayAddr string, jPort, bPort int, err error) (models.RelayState, error) {
@@ -487,8 +928,29 @@ func (rm *RelayManager) Stop() error {
 	return nil
 }
 
-func (rm *RelayManager) controlLoop(conn net.Conn, seq uint64, relayAddr, sessionID string, localJavaPort int) {
+func (rm *RelayManager) controlLoop(conn net.Conn, seq uint64, relayAddr string, useTLS bool, certPin, sessionID string, localJavaPort int) {
 	defer conn.Close()
+
+	stopKeepalive := make(chan struct{})
+	defer close(stopKeepalive)
+	go func() {
+		ticker := time.NewTicker(relayKeepalivePeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopKeepalive:
+				return
+			case <-ticker.C:
+				rm.ctrlWriteMu.Lock()
+				err := writeLineJSON(conn, relayControlMsg{Type: "keepalive"})
+				rm.ctrlWriteMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
+
 	for {
 		line, err := readLineRaw(conn, 0)
 		if err != nil {
@@ -512,17 +974,16 @@ func (rm *RelayManager) controlLoop(conn net.Conn, seq uint64, relayAddr, sessio
 			continue
 		}
 		if msg.Type == "tcp_open" && msg.ConnID != "" {
-			go forwardRelayTCP(relayAddr, sessionID, msg.ConnID, localJavaPort)
+			go forwardRelayTCP(relayAddr, useTLS, certPin, sessionID, msg.ConnID, localJavaPort)
 		}
 	}
 }
 
-func forwardRelayTCP(relayAddr, sessionID, connID string, localPort int) {
-	stream, err := net.DialTimeout("tcp", relayAddr, 5*time.Second)
+func forwardRelayTCP(relayAddr string, useTLS bool, certPin, sessionID, connID string, localPort int) {
+	stream, _, err := dialRelayConn(relayAddr, useTLS, certPin, 5*time.Second)
 	if err != nil {
 		return
 	}
-	tuneTCPConn(stream)
 	if err := writeLineJSON(stream, relayControlMsg{
 		Type:      "tcp_accept",
 		SessionID: sessionID,
@@ -604,6 +1065,60 @@ func (rm *RelayManager) udpLoop(udpStream net.Conn, seq uint64, localBedrockPort
 			_, _ = pConn.Write(payload)
 		}
 	}
+}
+
+// --- Network & Port Helpers ---
+
+func normalizeRelayAddr(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(trimmed); err != nil {
+		return net.JoinHostPort(trimmed, defaultRelayPort)
+	}
+	return trimmed
+}
+
+func listenTCPInRange(minPort, maxPort int) (net.Listener, error) {
+	if minPort <= 0 || maxPort < minPort {
+		return net.Listen("tcp", ":0")
+	}
+	span := maxPort - minPort + 1
+	start := cryptoRandInt(span)
+	for i := 0; i < span; i++ {
+		port := minPort + ((start + i) % span)
+		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port)); err == nil {
+			return ln, nil
+		}
+	}
+	return nil, fmt.Errorf("TCP port araliginda (%d-%d) bos port yok", minPort, maxPort)
+}
+
+func listenUDPInRange(minPort, maxPort int) (*net.UDPConn, error) {
+	if minPort <= 0 || maxPort < minPort {
+		return net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+	}
+	span := maxPort - minPort + 1
+	start := cryptoRandInt(span)
+	for i := 0; i < span; i++ {
+		port := minPort + ((start + i) % span)
+		if uc, err := net.ListenUDP("udp", &net.UDPAddr{Port: port}); err == nil {
+			return uc, nil
+		}
+	}
+	return nil, fmt.Errorf("UDP port araliginda (%d-%d) bos port yok", minPort, maxPort)
+}
+
+func cryptoRandInt(max int) int {
+	if max <= 1 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0
+	}
+	return int(n.Int64())
 }
 
 // --- Framing Helpers ---

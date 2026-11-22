@@ -216,6 +216,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/network/relay/status", s.handleRelayStatus)
 	mux.HandleFunc("POST /api/network/relay/start", s.handleRelayStart)
 	mux.HandleFunc("POST /api/network/relay/stop", s.handleRelayStop)
+	mux.HandleFunc("GET /api/network/relay/nodes", s.handleGetRelayNodes)
+	mux.HandleFunc("PUT /api/network/relay/nodes", s.handleSaveRelayNodes)
+	mux.HandleFunc("GET /api/network/relay/probe", s.handleProbeRelayNodes)
+	mux.HandleFunc("POST /api/network/tunnel/auto-start", s.handleAutoStartTunnel)
 
 	// WebSocket Console
 	mux.HandleFunc("GET /api/ws/console/{id}", s.handleWSConsole)
@@ -1288,6 +1292,8 @@ func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		RelayAddr        string `json:"relayAddr"`
 		Secret           string `json:"secret"`
+		TLS              *bool  `json:"tls"`
+		CertPin          string `json:"certPin"`
 		LocalJavaPort    int    `json:"localJavaPort"`
 		LocalBedrockPort int    `json:"localBedrockPort"`
 		WantJava         bool   `json:"wantJava"`
@@ -1303,7 +1309,20 @@ func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
 	if body.LocalBedrockPort <= 0 {
 		body.LocalBedrockPort = 19132
 	}
-	st, err := s.relay.Start(body.RelayAddr, body.Secret, body.LocalJavaPort, body.LocalBedrockPort, body.WantJava, body.WantBedrock)
+	useTLS := false
+	if body.TLS != nil {
+		useTLS = *body.TLS
+	}
+	st, err := s.relay.StartWithOptions(network.RelayClientOptions{
+		RelayAddr:        body.RelayAddr,
+		Secret:           body.Secret,
+		TLS:              useTLS,
+		CertPin:          body.CertPin,
+		LocalJavaPort:    body.LocalJavaPort,
+		LocalBedrockPort: body.LocalBedrockPort,
+		WantJava:         body.WantJava,
+		WantBedrock:      body.WantBedrock,
+	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -1314,6 +1333,152 @@ func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRelayStop(w http.ResponseWriter, r *http.Request) {
 	_ = s.relay.Stop()
 	writeJSON(w, http.StatusOK, s.relay.Status())
+}
+
+func (s *Server) handleGetRelayNodes(w http.ResponseWriter, r *http.Request) {
+	nodes := s.store.GetConfig().RelayNodes
+	if nodes == nil {
+		nodes = []models.RelayNode{}
+	}
+	writeJSON(w, http.StatusOK, nodes)
+}
+
+func (s *Server) handleSaveRelayNodes(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Nodes []models.RelayNode `json:"nodes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cleaned := make([]models.RelayNode, 0, len(body.Nodes))
+	for _, n := range body.Nodes {
+		addr := strings.TrimSpace(n.Address)
+		if addr == "" {
+			continue
+		}
+		id := strings.TrimSpace(n.ID)
+		if id == "" {
+			id = addr
+		}
+		cleaned = append(cleaned, models.RelayNode{
+			ID:      id,
+			Address: addr,
+			Secret:  strings.TrimSpace(n.Secret),
+			TLS:     n.TLS,
+			CertPin: strings.TrimSpace(n.CertPin),
+			Enabled: n.Enabled,
+		})
+	}
+	updated, err := s.store.UpdateConfig(func(cfg *models.AppConfig) {
+		cfg.RelayNodes = cleaned
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := updated.RelayNodes
+	if out == nil {
+		out = []models.RelayNode{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleProbeRelayNodes(w http.ResponseWriter, r *http.Request) {
+	probes := network.ProbeRelayNodes(s.store.GetConfig().RelayNodes)
+	if probes == nil {
+		probes = []models.RelayNodeProbe{}
+	}
+	writeJSON(w, http.StatusOK, probes)
+}
+
+func (s *Server) handleAutoStartTunnel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		LocalJavaPort    int  `json:"localJavaPort"`
+		LocalBedrockPort int  `json:"localBedrockPort"`
+		WantJava         bool `json:"wantJava"`
+		WantBedrock      bool `json:"wantBedrock"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.LocalJavaPort <= 0 {
+		body.LocalJavaPort = 25565
+	}
+	if body.LocalBedrockPort <= 0 {
+		body.LocalBedrockPort = 19132
+	}
+	if !body.WantJava && !body.WantBedrock {
+		body.WantJava = true
+	}
+
+	_ = s.relay.Stop()
+	_ = s.e4mc.Stop()
+	_ = s.bore.Stop()
+
+	nodes := s.store.GetConfig().RelayNodes
+	var enabledNodes []models.RelayNode
+	for _, n := range nodes {
+		if n.Enabled && strings.TrimSpace(n.Address) != "" {
+			enabledNodes = append(enabledNodes, n)
+		}
+	}
+
+	var fallbackReason string
+	if len(enabledNodes) > 0 {
+		st, _, err := s.relay.StartBestNode(enabledNodes, body.LocalJavaPort, body.LocalBedrockPort, body.WantJava, body.WantBedrock)
+		if err == nil && st.Running {
+			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
+				Provider:       "relay",
+				NodeID:         st.NodeID,
+				LatencyMs:      st.LatencyMs,
+				Encrypted:      st.Encrypted,
+				JavaAddress:    st.JavaAddress,
+				BedrockAddress: st.BedrockAddress,
+				Relay:          &st,
+			})
+			return
+		}
+		if err != nil {
+			fallbackReason = err.Error()
+		}
+	}
+
+	if body.WantJava {
+		e4mcSt, eErr := s.e4mc.Start("", body.LocalJavaPort)
+		if eErr == nil && e4mcSt.Running {
+			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
+				Provider:       "e4mc",
+				NodeID:         "e4mc (" + e4mcSt.Region + ")",
+				LatencyMs:      e4mcSt.LatencyMs,
+				JavaAddress:    e4mcSt.Domain,
+				FallbackReason: fallbackReason,
+				E4mc:           &e4mcSt,
+			})
+			return
+		}
+		boreSt, bErr := s.bore.Start("bore.pub", body.LocalJavaPort, "")
+		if bErr == nil && boreSt.Running {
+			reason := fallbackReason
+			if reason == "" && eErr != nil {
+				reason = eErr.Error()
+			}
+			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
+				Provider:       "bore",
+				NodeID:         "bore.pub",
+				LatencyMs:      boreSt.LatencyMs,
+				JavaAddress:    boreSt.Address,
+				FallbackReason: reason,
+				Bore:           &boreSt,
+			})
+			return
+		}
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tum tuneller basarisiz: VDS=(%s) e4mc=(%v) bore=(%v)", fallbackReason, eErr, bErr))
+		return
+	}
+
+	if fallbackReason == "" {
+		fallbackReason = "saf Bedrock (UDP) icin Ag & Tunel sekmesinden bir VDS koprusu ekleyin veya playit.gg baslatin"
+	}
+	writeError(w, http.StatusBadGateway, fallbackReason)
 }
 
 // --- WebSocket ---

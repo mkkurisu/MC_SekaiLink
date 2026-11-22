@@ -45,6 +45,25 @@ export interface ServerInstance {
   lastError?: string;
 }
 
+export interface RelayNode {
+  id: string;
+  address: string;
+  secret?: string;
+  tls: boolean;
+  certPin?: string;
+  enabled: boolean;
+}
+
+export interface RelayNodeProbe {
+  id: string;
+  address: string;
+  online: boolean;
+  nodeId?: string;
+  latencyMs?: number;
+  encrypted?: boolean;
+  error?: string;
+}
+
 export interface AppConfig {
   dataDir: string;
   apiPort: number;
@@ -54,6 +73,7 @@ export interface AppConfig {
   language: 'tr' | 'en';
   javaPath?: string;
   playitAutoStart: boolean;
+  relayNodes?: RelayNode[];
 }
 
 export interface ConsoleLine {
@@ -230,6 +250,8 @@ export interface E4mcState {
 
 export interface RelayState {
   running: boolean;
+  nodeId?: string;
+  encrypted?: boolean;
   relayAddr: string;
   localJavaPort: number;
   localBedrockPort: number;
@@ -237,4 +259,17 @@ export interface RelayState {
   bedrockAddress: string;
   latencyMs?: number;
   lastError?: string;
+}
+
+export interface AutoTunnelResult {
+  provider: 'relay' | 'e4mc' | 'bore' | string;
+  nodeId?: string;
+  latencyMs?: number;
+  encrypted?: boolean;
+  javaAddress?: string;
+  bedrockAddress?: string;
+  fallbackReason?: string;
+  relay?: RelayState;
+  e4mc?: E4mcState;
+  bore?: BoreState;
 }
