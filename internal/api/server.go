@@ -216,6 +216,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/network/playit/install", s.handlePlayitInstall)
 	mux.HandleFunc("POST /api/network/playit/start", s.handlePlayitStart)
 	mux.HandleFunc("POST /api/network/playit/stop", s.handlePlayitStop)
+	mux.HandleFunc("POST /api/network/playit/reset", s.handlePlayitReset)
 	mux.HandleFunc("GET /api/network/e4mc/status", s.handleE4mcStatus)
 	mux.HandleFunc("POST /api/network/e4mc/start", s.handleE4mcStart)
 	mux.HandleFunc("POST /api/network/e4mc/stop", s.handleE4mcStop)
@@ -1235,6 +1236,15 @@ func (s *Server) handlePlayitStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.playit.Status())
+}
+
+func (s *Server) handlePlayitReset(w http.ResponseWriter, r *http.Request) {
+	st, err := s.playit.ResetAndClaim(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *Server) handleE4mcStatus(w http.ResponseWriter, r *http.Request) {

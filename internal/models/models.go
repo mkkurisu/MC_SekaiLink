@@ -253,15 +253,18 @@ type NetworkDiagnostics struct {
 }
 
 type TunnelState struct {
-	Installed      bool     `json:"installed"`
-	Running        bool     `json:"running"`
-	BinaryPath     string   `json:"binaryPath"`
-	ClaimURL       string   `json:"claimUrl"`
-	JavaAddress    string   `json:"javaAddress"`
-	BedrockAddress string   `json:"bedrockAddress"`
-	Addresses      []string `json:"addresses"`
-	Logs           []string `json:"logs"`
-	LastError      string   `json:"lastError,omitempty"`
+	Installed       bool     `json:"installed"`
+	Running         bool     `json:"running"`
+	BinaryPath      string   `json:"binaryPath"`
+	ClaimURL        string   `json:"claimUrl"`
+	DashboardURL    string   `json:"dashboardUrl,omitempty"`
+	AccountStatus   string   `json:"accountStatus,omitempty"`
+	DisabledTunnels int      `json:"disabledTunnels,omitempty"`
+	JavaAddress     string   `json:"javaAddress"`
+	BedrockAddress  string   `json:"bedrockAddress"`
+	Addresses       []string `json:"addresses"`
+	Logs            []string `json:"logs"`
+	LastError       string   `json:"lastError,omitempty"`
 }
 
 type BoreState struct {
@@ -291,6 +294,7 @@ type PinggyState struct {
 	Server    string `json:"server"`
 	LocalPort int    `json:"localPort"`
 	Address   string `json:"address"`
+	DirectIP  string `json:"directIp,omitempty"`
 	LatencyMs int64  `json:"latencyMs,omitempty"`
 	HasToken  bool   `json:"hasToken,omitempty"`
 	StartedAt int64  `json:"startedAt,omitempty"`

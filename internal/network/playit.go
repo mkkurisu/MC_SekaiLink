@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,16 @@ import (
 )
 
 var (
-	claimURLRe   = regexp.MustCompile(`https://playit\.gg/claim/[A-Za-z0-9\-_]+`)
-	tunnelAddrRe = regexp.MustCompile(`([a-zA-Z0-9.\-]+\.(?:joinmc\.link|playit\.gg|ply\.gg|at\.ply\.gg)(?::\d+)?)`)
+	ansiEscapeRe     = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	claimURLRe       = regexp.MustCompile(`https://playit\.gg/claim/[A-Za-z0-9\-_]+`)
+	claimCodeRe      = regexp.MustCompile(`claim[_-]?code[=:\s"]+([A-Za-z0-9\-_]{6,})`)
+	accountURLRe     = regexp.MustCompile(`https://playit\.gg/account[^\s"'<>]+`)
+	agentIDRe        = regexp.MustCompile(`agent_id=([a-fA-F0-9\-]{8,})`)
+	accountStatusRe  = regexp.MustCompile(`account_status="([^"]+)"`)
+	disabledCountRe  = regexp.MustCompile(`disabled_tunnel_count=(\d+)`)
+	secretPathRe     = regexp.MustCompile(`secret_path=Some\("([^"]+)"\)`)
+	socketPathRe     = regexp.MustCompile(`socket_path=Some\("([^"]+)"\)`)
+	tunnelAddrRe     = regexp.MustCompile(`([a-zA-Z0-9.\-]+\.(?:joinmc\.link|playit\.gg|ply\.gg|at\.ply\.gg)(?::\d+)?)`)
 )
 
 type playitReleaseAsset struct {
@@ -33,13 +42,15 @@ type PlayitManager struct {
 	dataDir string
 	binDir  string
 
-	mu         sync.Mutex
-	cliPath    string
-	daemonPath string
-	socketPath string
-	cmd        *exec.Cmd
-	daemonCmd  *exec.Cmd
-	state      models.TunnelState
+	mu          sync.Mutex
+	cliPath     string
+	daemonPath  string
+	socketPath  string
+	secretPath  string
+	cmd         *exec.Cmd
+	daemonCmd   *exec.Cmd
+	claimCancel context.CancelFunc
+	state       models.TunnelState
 }
 
 func NewPlayitManager(dataDir, binDir string) *PlayitManager {
@@ -49,6 +60,48 @@ func NewPlayitManager(dataDir, binDir string) *PlayitManager {
 	}
 	pm.refreshBinaryPathLocked()
 	return pm
+}
+
+func (pm *PlayitManager) resolveSecretPathLocked() string {
+	if pm.secretPath != "" {
+		return pm.secretPath
+	}
+	if runtime.GOOS == "windows" {
+		if localApp := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localApp != "" {
+			return filepath.Join(localApp, "playit_gg", "playit.toml")
+		}
+	}
+	return filepath.Join(pm.dataDir, "playit.toml")
+}
+
+func (pm *PlayitManager) knownSecretPathsLocked() []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	add(pm.secretPath)
+	add(filepath.Join(pm.dataDir, "playit.toml"))
+	if runtime.GOOS == "windows" {
+		if localApp := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localApp != "" {
+			add(filepath.Join(localApp, "playit_gg", "playit.toml"))
+		}
+	}
+	return out
+}
+
+func (pm *PlayitManager) hasSecretConfiguredLocked() bool {
+	for _, p := range pm.knownSecretPathsLocked() {
+		info, err := os.Stat(p)
+		if err == nil && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (pm *PlayitManager) refreshBinaryPathLocked() {
@@ -238,6 +291,151 @@ func matchPlayitAssetNames() (cliAsset string, daemonAsset string) {
 	return "", ""
 }
 
+// StartClaimFlow generates a fresh playit.gg claim code + clickable URL via `playit claim generate`/`url`
+// and runs `claim exchange --wait 300` in the background so claiming auto-starts the tunnel.
+func (pm *PlayitManager) StartClaimFlow(ctx context.Context) (models.TunnelState, error) {
+	pm.mu.Lock()
+	pm.refreshBinaryPathLocked()
+	if !pm.state.Installed {
+		pm.mu.Unlock()
+		return pm.Status(), fmt.Errorf("playit ajani kurulu degil, once yukleyin")
+	}
+	if pm.claimCancel != nil {
+		pm.claimCancel()
+		pm.claimCancel = nil
+	}
+	cliPath := pm.cliPath
+	secretPath := pm.resolveSecretPathLocked()
+	pm.mu.Unlock()
+
+	cmdCtx, cmdCancel := context.WithTimeout(ctx, 10*time.Second)
+	genCmd := exec.CommandContext(cmdCtx, cliPath, "claim", "generate")
+	configurePlayitWindow(genCmd)
+	genOut, err := genCmd.CombinedOutput()
+	cmdCancel()
+	if err != nil {
+		return pm.Status(), fmt.Errorf("playit claim kodu olusturulamadi: %w (%s)", err, strings.TrimSpace(string(genOut)))
+	}
+	claimCode := strings.TrimSpace(stripANSI(string(genOut)))
+	if fields := strings.Fields(claimCode); len(fields) > 0 {
+		claimCode = fields[len(fields)-1]
+	}
+	if claimCode == "" {
+		return pm.Status(), fmt.Errorf("playit claim kodu bos dondu")
+	}
+
+	claimURL := "https://playit.gg/claim/" + claimCode
+	urlCtx, urlCancel := context.WithTimeout(ctx, 8*time.Second)
+	urlCmd := exec.CommandContext(urlCtx, cliPath, "claim", "url", claimCode)
+	configurePlayitWindow(urlCmd)
+	if uOut, uErr := urlCmd.Output(); uErr == nil {
+		if m := claimURLRe.FindString(stripANSI(string(uOut))); m != "" {
+			claimURL = m
+		}
+	}
+	urlCancel()
+
+	exCtx, exCancel := context.WithCancel(context.Background())
+
+	pm.mu.Lock()
+	pm.claimCancel = exCancel
+	pm.state.ClaimURL = claimURL
+	pm.state.AccountStatus = "unclaimed"
+	pm.state.DashboardURL = ""
+	pm.state.DisabledTunnels = 0
+	pm.state.LastError = ""
+	pm.appendLogLocked(fmt.Sprintf("[MC SekaiLink] Playit Claim URL hazir: %s", claimURL))
+	st := pm.Status()
+	pm.mu.Unlock()
+
+	go pm.waitClaimExchange(exCtx, cliPath, claimCode, secretPath)
+	return st, nil
+}
+
+func (pm *PlayitManager) waitClaimExchange(ctx context.Context, cliPath, claimCode, secretPath string) {
+	runCtx, cancel := context.WithTimeout(ctx, 310*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(runCtx, cliPath, "claim", "exchange", "--wait", "300", claimCode)
+	configurePlayitWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		pm.mu.Lock()
+		pm.appendLogLocked("[MC SekaiLink] Playit Claim bekleme sona erdi: " + strings.TrimSpace(stripANSI(string(out))))
+		pm.mu.Unlock()
+		return
+	}
+
+	secretKey := extractClaimSecretKey(string(out))
+	if secretKey == "" {
+		return
+	}
+
+	if dir := filepath.Dir(secretPath); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+	content := fmt.Sprintf("secret_key = %q\n", secretKey)
+	if wErr := os.WriteFile(secretPath, []byte(content), 0o600); wErr != nil {
+		pm.mu.Lock()
+		pm.state.LastError = fmt.Sprintf("playit.toml kaydedilemedi (%s): %v", secretPath, wErr)
+		pm.mu.Unlock()
+		return
+	}
+
+	pm.mu.Lock()
+	pm.secretPath = secretPath
+	pm.state.ClaimURL = ""
+	pm.state.AccountStatus = ""
+	pm.appendLogLocked("[MC SekaiLink] Playit ajan eslestirmesi tamamlandi, tunel baslatiliyor...")
+	pm.mu.Unlock()
+
+	_ = pm.Start()
+}
+
+func extractClaimSecretKey(raw string) string {
+	clean := stripANSI(raw)
+	lines := strings.Split(clean, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx >= 0 && strings.Contains(strings.ToLower(line[:idx]), "secret") {
+			line = strings.TrimSpace(line[idx+1:])
+		}
+		line = strings.Trim(line, `"'`)
+		if line != "" && !strings.ContainsAny(line, " \t") {
+			return line
+		}
+	}
+	return ""
+}
+
+// ResetAndClaim removes the local playit secret and generates a fresh Claim URL.
+func (pm *PlayitManager) ResetAndClaim(ctx context.Context) (models.TunnelState, error) {
+	_ = pm.Stop()
+
+	pm.mu.Lock()
+	for _, p := range pm.knownSecretPathsLocked() {
+		_ = os.Remove(p)
+	}
+	pm.state.Addresses = nil
+	pm.state.JavaAddress = ""
+	pm.state.BedrockAddress = ""
+	pm.state.ClaimURL = ""
+	pm.state.DashboardURL = ""
+	pm.state.AccountStatus = ""
+	pm.state.DisabledTunnels = 0
+	pm.state.Logs = nil
+	pm.state.LastError = ""
+	pm.mu.Unlock()
+
+	return pm.StartClaimFlow(ctx)
+}
+
 func (pm *PlayitManager) Start() error {
 	pm.mu.Lock()
 	if pm.cmd != nil || pm.daemonCmd != nil {
@@ -248,6 +446,17 @@ func (pm *PlayitManager) Start() error {
 	if !pm.state.Installed {
 		pm.mu.Unlock()
 		return fmt.Errorf("playit ajani kurulu degil, once yukleyin")
+	}
+
+	if !pm.hasSecretConfiguredLocked() {
+		pm.mu.Unlock()
+		_, err := pm.StartClaimFlow(context.Background())
+		return err
+	}
+
+	if pm.claimCancel != nil {
+		pm.claimCancel()
+		pm.claimCancel = nil
 	}
 
 	pm.state.Logs = nil
@@ -307,6 +516,7 @@ func (pm *PlayitManager) Start() error {
 	}
 	pm.daemonCmd = dCmd
 	pm.socketPath = sockPath
+	pm.secretPath = secretPath
 	pm.state.Running = true
 	pm.mu.Unlock()
 
@@ -390,11 +600,16 @@ func (pm *PlayitManager) Stop() error {
 	cCmd := pm.cmd
 	dCmd := pm.daemonCmd
 	sock := pm.socketPath
+	claimCancel := pm.claimCancel
 	pm.cmd = nil
 	pm.daemonCmd = nil
+	pm.claimCancel = nil
 	pm.state.Running = false
 	pm.mu.Unlock()
 
+	if claimCancel != nil {
+		claimCancel()
+	}
 	if cCmd != nil && cCmd.Process != nil {
 		_ = cCmd.Process.Kill()
 	}
@@ -407,29 +622,62 @@ func (pm *PlayitManager) Stop() error {
 	return nil
 }
 
+func (pm *PlayitManager) appendLogLocked(line string) {
+	if len(pm.state.Logs) >= 120 {
+		pm.state.Logs = append(pm.state.Logs[1:], line)
+	} else {
+		pm.state.Logs = append(pm.state.Logs, line)
+	}
+}
+
 func (pm *PlayitManager) readLogs(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(stripANSI(scanner.Text()))
 		if line == "" {
 			continue
 		}
 		pm.mu.Lock()
-		if len(pm.state.Logs) >= 120 {
-			pm.state.Logs = append(pm.state.Logs[1:], line)
-		} else {
-			pm.state.Logs = append(pm.state.Logs, line)
+		pm.appendLogLocked(line)
+		if m := secretPathRe.FindStringSubmatch(line); len(m) >= 2 {
+			pm.secretPath = strings.ReplaceAll(m[1], `\\`, `\`)
+		}
+		if m := socketPathRe.FindStringSubmatch(line); len(m) >= 2 {
+			pm.socketPath = strings.ReplaceAll(m[1], `\\`, `\`)
 		}
 		ParsePlayitOutputLine(line, &pm.state)
 		pm.mu.Unlock()
 	}
 }
 
-// ParsePlayitOutputLine extracts claim URLs and allocated Java/Bedrock tunnel addresses from agent stdout.
+func stripANSI(s string) string {
+	return ansiEscapeRe.ReplaceAllString(s, "")
+}
+
+// ParsePlayitOutputLine extracts claim URLs, v2 agent/account status, and allocated Java/Bedrock tunnel addresses.
 func ParsePlayitOutputLine(line string, state *models.TunnelState) {
+	line = stripANSI(line)
 	if m := claimURLRe.FindString(line); m != "" {
 		state.ClaimURL = m
+	} else if m := claimCodeRe.FindStringSubmatch(line); len(m) >= 2 && state.ClaimURL == "" {
+		state.ClaimURL = "https://playit.gg/claim/" + m[1]
 	}
+
+	if m := agentIDRe.FindStringSubmatch(line); len(m) >= 2 {
+		state.DashboardURL = "https://playit.gg/account/agents/" + m[1]
+	} else if m := accountURLRe.FindString(line); m != "" && state.DashboardURL == "" {
+		state.DashboardURL = m
+	}
+
+	if m := accountStatusRe.FindStringSubmatch(line); len(m) >= 2 {
+		state.AccountStatus = m[1]
+	}
+	if m := disabledCountRe.FindStringSubmatch(line); len(m) >= 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			state.DisabledTunnels = n
+		}
+	}
+
 	matches := tunnelAddrRe.FindAllString(line, -1)
 	for _, addr := range matches {
 		lowerAddr := strings.ToLower(addr)

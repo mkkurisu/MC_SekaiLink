@@ -202,6 +202,9 @@ export interface TunnelState {
   running: boolean;
   binaryPath: string;
   claimUrl: string;
+  dashboardUrl?: string;
+  accountStatus?: string;
+  disabledTunnels?: number;
   javaAddress: string;
   bedrockAddress: string;
   addresses: string[];
@@ -236,6 +239,7 @@ export interface PinggyState {
   server: string;
   localPort: number;
   address: string;
+  directIp?: string;
   latencyMs?: number;
   hasToken?: boolean;
   startedAt?: number;

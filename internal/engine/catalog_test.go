@@ -3,7 +3,24 @@ package engine
 import (
 	"reflect"
 	"testing"
+
+	"github.com/MC_SekaiLink/mc-sekailink/internal/models"
 )
+
+func TestEffectiveCrossPlayMCVersion(t *testing.T) {
+	if got := effectiveCrossPlayMCVersion(models.EngineNeoForge, "21.4.124-beta"); got != "1.21.4" {
+		t.Fatalf("expected 1.21.4, got %q", got)
+	}
+	if got := effectiveCrossPlayMCVersion(models.EngineNeoForge, "21.0.167-beta"); got != "1.21" {
+		t.Fatalf("expected 1.21, got %q", got)
+	}
+	if got := effectiveCrossPlayMCVersion(models.EngineFabric, "26.2"); got != "26.2" {
+		t.Fatalf("expected 26.2, got %q", got)
+	}
+	if got := effectiveCrossPlayMCVersion(models.EnginePaper, "1.21.4"); got != "1.21.4" {
+		t.Fatalf("expected 1.21.4, got %q", got)
+	}
+}
 
 func TestExtractSortedPaperVersions(t *testing.T) {
 	groups := map[string][]string{

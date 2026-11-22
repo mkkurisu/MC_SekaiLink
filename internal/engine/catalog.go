@@ -525,6 +525,40 @@ func installPowerNukkitX(ctx context.Context, tag, serverDir string, progress fu
 	return downloadToFile(ctx, dl, filepath.Join(serverDir, "server.jar"))
 }
 
+func effectiveCrossPlayMCVersion(eng models.EngineType, rawVer string) string {
+	v := strings.TrimSpace(rawVer)
+	if v == "" || strings.EqualFold(v, "latest") {
+		return ""
+	}
+	if eng == models.EngineNeoForge {
+		parts := strings.Split(v, ".")
+		if len(parts) >= 2 && (parts[0] == "20" || parts[0] == "21") {
+			if parts[1] == "0" {
+				return "1." + parts[0]
+			}
+			return "1." + parts[0] + "." + parts[1]
+		}
+	}
+	return v
+}
+
+func hasFabricAPIDependencyJar(modsDir string) bool {
+	entries, err := os.ReadDir(modsDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasSuffix(name, ".jar") && (strings.Contains(name, "fabric-api") || strings.Contains(name, "fabric_api")) {
+			return true
+		}
+	}
+	return false
+}
+
 func installCrossPlayPlugins(ctx context.Context, inst models.ServerInstance, progress func(string)) error {
 	var platform, destDir, configSubDir string
 	switch inst.Engine {
@@ -548,17 +582,51 @@ func installCrossPlayPlugins(ctx context.Context, inst models.ServerInstance, pr
 		return err
 	}
 
+	mcVer := effectiveCrossPlayMCVersion(inst.Engine, inst.MCVersion)
+
 	progress("GeyserMC Cross-Play modulu indiriliyor...")
-	geyserURL := fmt.Sprintf("https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/%s", platform)
-	if err := downloadToFile(ctx, geyserURL, filepath.Join(destDir, "Geyser-"+platform+".jar")); err != nil {
-		return err
+	if inst.Engine == models.EnginePaper || inst.Engine == models.EnginePurpur {
+		geyserURL := "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot"
+		if err := downloadToFile(ctx, geyserURL, filepath.Join(destDir, "Geyser-spigot.jar")); err != nil {
+			if err2 := installModrinthLatest(ctx, "geyser", "paper", mcVer, destDir); err2 != nil {
+				if err3 := installModrinthLatest(ctx, "geyser", "paper", "", destDir); err3 != nil {
+					return err
+				}
+			}
+		}
+	} else {
+		// Fabric / NeoForge: prefer Modrinth version-matched build so the MC version aligns cleanly, then GeyserMC latest fallback
+		if err := installModrinthLatest(ctx, "geyser", platform, mcVer, destDir); err != nil {
+			if err2 := installModrinthLatest(ctx, "geyser", platform, "", destDir); err2 != nil {
+				geyserURL := fmt.Sprintf("https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/%s", platform)
+				if err3 := downloadToFile(ctx, geyserURL, filepath.Join(destDir, "Geyser-"+platform+".jar")); err3 != nil {
+					return err
+				}
+			}
+		}
 	}
 
 	if inst.CrossPlay.Floodgate {
 		progress("Floodgate (Bedrock giris destegi) indiriliyor...")
-		floodgateURL := fmt.Sprintf("https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/%s", platform)
-		if err := downloadToFile(ctx, floodgateURL, filepath.Join(destDir, "floodgate-"+platform+".jar")); err != nil {
-			return err
+		if inst.Engine == models.EnginePaper || inst.Engine == models.EnginePurpur {
+			floodgateURL := "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot"
+			if err := downloadToFile(ctx, floodgateURL, filepath.Join(destDir, "floodgate-spigot.jar")); err != nil {
+				progress(fmt.Sprintf("Uyari: Floodgate indirilemedi (%v), Geyser offline/standart modda devam edecek.", err))
+			}
+		} else {
+			// GeyserMC Downloads API v2 does not serve Floodgate Fabric/NeoForge (returns 404); Modrinth hosts them.
+			if err := installModrinthLatest(ctx, "floodgate", platform, mcVer, destDir); err != nil {
+				if err2 := installModrinthLatest(ctx, "floodgate", platform, "", destDir); err2 != nil {
+					progress(fmt.Sprintf("Uyari: %s (%s) icin Floodgate bulunamadi (%v), Geyser offline/standart modda devam edecek.", platform, mcVer, err2))
+				}
+			}
+		}
+	}
+
+	if inst.Engine == models.EngineFabric && !hasFabricAPIDependencyJar(destDir) {
+		progress("Fabric API (Geyser-Fabric bagimliligi) indiriliyor...")
+		if err := installModrinthLatest(ctx, "fabric-api", "fabric", mcVer, destDir); err != nil {
+			progress(fmt.Sprintf("Uyari: Fabric API otomatik indirilemedi (%v). Gerekirse Mod & Eklenti sekmesinden ekleyin.", err))
 		}
 	}
 

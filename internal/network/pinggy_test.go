@@ -199,3 +199,22 @@ func TestPinggyManagerMockSSHTunnel(t *testing.T) {
 		t.Fatal("expected PinggyManager to be stopped")
 	}
 }
+
+func TestNormalizePinggyPublicAddr(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"tcp://zhtmo-178-241-135-60.run.pinggy-free.link:41407", "zhtmo-178-241-135-60.run.pinggy-free.link:41407"},
+		{"mock.a.pinggy.link:41234/", "mock.a.pinggy.link:41234"},
+		{"http://foo.a.pinggy.link:80", ""},
+		{"https://foo.a.pinggy.link", ""},
+		{"tcp://bad.link:0", ""},
+		{"tcp://bad.link/path", ""},
+	}
+	for _, tc := range cases {
+		if got := normalizePinggyPublicAddr(tc.in); got != tc.want {
+			t.Fatalf("normalizePinggyPublicAddr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

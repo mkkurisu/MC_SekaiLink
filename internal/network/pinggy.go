@@ -229,7 +229,7 @@ func (pm *PinggyManager) startWithCandidates(candidates []pinggyEndpoint, token 
 	for _, ep := range candidates {
 		lastEp = ep
 		for _, sshUser := range users {
-			sshClient, ln, pubAddr, latencyMs, dialErr := dialPinggyTCP(ep.Host, sshUser)
+			sshClient, ln, pubAddr, directIP, latencyMs, dialErr := dialPinggyTCP(ep.Host, sshUser)
 			if dialErr != nil {
 				lastErr = dialErr
 				continue
@@ -255,6 +255,7 @@ func (pm *PinggyManager) startWithCandidates(candidates []pinggyEndpoint, token 
 				Server:    ep.Host,
 				LocalPort: localPort,
 				Address:   pubAddr,
+				DirectIP:  directIP,
 				LatencyMs: latencyMs,
 				HasToken:  token != "",
 				StartedAt: now.Unix(),
@@ -275,11 +276,11 @@ func (pm *PinggyManager) startWithCandidates(candidates []pinggyEndpoint, token 
 	return pm.failState(lastEp.Region, lastEp.Host, localPort, token != "", lastErr)
 }
 
-func dialPinggyTCP(host, sshUser string) (*ssh.Client, net.Listener, string, int64, error) {
+func dialPinggyTCP(host, sshUser string) (*ssh.Client, net.Listener, string, string, int64, error) {
 	t0 := time.Now()
 	rawConn, err := net.DialTimeout("tcp", host, 8*time.Second)
 	if err != nil {
-		return nil, nil, "", 0, fmt.Errorf("pinggy baglantisi kurulamadi (%s): %w", host, err)
+		return nil, nil, "", "", 0, fmt.Errorf("pinggy baglantisi kurulamadi (%s): %w", host, err)
 	}
 	latencyMs := time.Since(t0).Milliseconds()
 	if latencyMs < 1 {
@@ -309,14 +310,14 @@ func dialPinggyTCP(host, sshUser string) (*ssh.Client, net.Listener, string, int
 	_ = rawConn.SetDeadline(time.Time{})
 	if err != nil {
 		_ = rawConn.Close()
-		return nil, nil, "", 0, fmt.Errorf("pinggy SSH el sikismasi basarisiz (%s / %s): %w", host, sshUser, err)
+		return nil, nil, "", "", 0, fmt.Errorf("pinggy SSH el sikismasi basarisiz (%s / %s): %w", host, sshUser, err)
 	}
 	sshClient := ssh.NewClient(c, chans, reqs)
 
 	ln, err := sshClient.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		_ = sshClient.Close()
-		return nil, nil, "", 0, fmt.Errorf("pinggy TCP yonlendirme acilamadi: %w", err)
+		return nil, nil, "", "", 0, fmt.Errorf("pinggy TCP yonlendirme acilamadi: %w", err)
 	}
 
 	// Step 1: Query internal port config & auth status over Pinggy's control channels if available.
@@ -325,7 +326,7 @@ func dialPinggyTCP(host, sshUser string) (*ssh.Client, net.Listener, string, int
 			if !st.Success && strings.TrimSpace(st.Error) != "" {
 				_ = ln.Close()
 				_ = sshClient.Close()
-				return nil, nil, "", 0, fmt.Errorf("pinggy sunucu reddi: %s", strings.TrimSpace(st.Error))
+				return nil, nil, "", "", 0, fmt.Errorf("pinggy sunucu reddi: %s", strings.TrimSpace(st.Error))
 			}
 		}
 	}
@@ -349,17 +350,18 @@ func dialPinggyTCP(host, sshUser string) (*ssh.Client, net.Listener, string, int
 	// Step 4: Final fallback to Listener Addr if non-loopback non-zero port
 	if pubAddr == "" && ln.Addr() != nil {
 		if h, p, err := net.SplitHostPort(ln.Addr().String()); err == nil && p != "" && p != "0" && h != "" && h != "0.0.0.0" {
-			pubAddr = net.JoinHostPort(h, p)
+			pubAddr = normalizePinggyPublicAddr(net.JoinHostPort(h, p))
 		}
 	}
 
 	if pubAddr == "" {
 		_ = ln.Close()
 		_ = sshClient.Close()
-		return nil, nil, "", 0, fmt.Errorf("pinggy genel TCP adresi alinamadi (%s)", host)
+		return nil, nil, "", "", 0, fmt.Errorf("pinggy genel TCP adresi alinamadi (%s)", host)
 	}
 
-	return sshClient, ln, pubAddr, latencyMs, nil
+	directIP := resolvePinggyDirectIP(pubAddr)
+	return sshClient, ln, pubAddr, directIP, latencyMs, nil
 }
 
 func queryPinggyPortConfig(client *ssh.Client) (pinggyPortConfig, error) {
@@ -535,13 +537,59 @@ func readWithShortTimeout(r io.Reader, timeout time.Duration) []byte {
 
 func normalizePinggyPublicAddr(raw string) string {
 	s := strings.TrimSpace(raw)
-	s = strings.TrimPrefix(s, "tcp://")
-	s = strings.TrimSuffix(s, "/")
-	if m := pinggyTCPURLRe.FindStringSubmatch(raw); len(m) >= 2 {
-		return m[1]
+	if s == "" {
+		return ""
 	}
-	if h, p, err := net.SplitHostPort(s); err == nil && h != "" && p != "" && p != "0" {
-		return net.JoinHostPort(h, p)
+	lower := strings.ToLower(s)
+	// Never accept HTTP/HTTPS/WS web debug URLs as a Minecraft TCP server address
+	if strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "ws://") ||
+		strings.HasPrefix(lower, "wss://") {
+		return ""
+	}
+	if m := pinggyTCPURLRe.FindStringSubmatch(s); len(m) >= 2 {
+		s = m[1]
+	} else {
+		s = strings.TrimPrefix(s, "tcp://")
+	}
+	s = strings.TrimRight(s, "/ \t\r\n")
+	if strings.ContainsAny(s, "/ \t\r\n") {
+		return ""
+	}
+	h, p, err := net.SplitHostPort(s)
+	if err != nil || h == "" || p == "" {
+		return ""
+	}
+	portNum, err := strconv.Atoi(p)
+	if err != nil || portNum <= 0 || portNum > 65535 {
+		return ""
+	}
+	return net.JoinHostPort(h, strconv.Itoa(portNum))
+}
+
+func resolvePinggyDirectIP(pubAddr string) string {
+	host, port, err := net.SplitHostPort(pubAddr)
+	if err != nil || host == "" || port == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return pubAddr
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ips, lErr := net.DefaultResolver.LookupIP(ctx, "ip4", host)
+		cancel()
+		if lErr == nil && len(ips) > 0 {
+			for _, ip := range ips {
+				if ip4 := ip.To4(); ip4 != nil {
+					return net.JoinHostPort(ip4.String(), port)
+				}
+			}
+		}
+		if attempt == 0 {
+			time.Sleep(250 * time.Millisecond)
+		}
 	}
 	return ""
 }

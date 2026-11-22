@@ -225,7 +225,7 @@ export const NetworkPage: React.FC<Props> = ({
           localPort: localJavaPort,
         }),
       });
-      setMsg(`${t.pinggyOpenedMsg} ${st.address}`);
+      setMsg(`${t.pinggyOpenedMsg} ${st.directIp || st.address}`);
       onRefreshTunnel();
     } catch (e: unknown) {
       setMsg(e instanceof Error ? e.message : t.pinggyErr);
@@ -294,6 +294,22 @@ export const NetworkPage: React.FC<Props> = ({
     try {
       await apiFetch('/api/network/playit/stop', { method: 'POST' });
       onRefreshTunnel();
+    } finally {
+      setBusyPlayit(false);
+    }
+  };
+
+  const resetPlayitClaim = async () => {
+    setBusyPlayit(true);
+    setMsg('');
+    try {
+      if (!tunnel?.installed) {
+        await apiFetch('/api/network/playit/install', { method: 'POST' });
+      }
+      await apiFetch<TunnelState>('/api/network/playit/reset', { method: 'POST' });
+      onRefreshTunnel();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : t.playitErr);
     } finally {
       setBusyPlayit(false);
     }
@@ -720,10 +736,27 @@ export const NetworkPage: React.FC<Props> = ({
         />
       </div>
 
+      <div className="mt-2.5 flex items-start gap-2 rounded-xl border border-sky-500/20 bg-sky-500/5 px-3.5 py-2 text-[11px] text-sky-200">
+        <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-400" />
+        <span>{t.pinggyJavaOnlyHint}</span>
+      </div>
+
       <p className="mt-2 text-[11px] text-slate-400">{t.pinggyFreeLimitHint}</p>
 
       {pinggy?.running && pinggy.address && (
-        <div className="mt-4">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          {pinggy.directIp && (
+            <CopyBox
+              label={`${t.pinggyDirectIpLabel} (${pinggy.latencyMs || 0} ms)`}
+              value={pinggy.directIp}
+              copied={copiedKey === 'pinggy-ip'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
+              onCopy={() => copyText('pinggy-ip', pinggy.directIp!)}
+              onQr={() => setQrModal({ title: t.pinggyQrTitle, subtitle: t.pinggyQrSub, value: pinggy.directIp! })}
+            />
+          )}
           <CopyBox
             label={`${t.pinggyCopyLabel} (${pinggy.region || 'EU'} • ${pinggy.latencyMs || 0} ms)`}
             value={pinggy.address}
@@ -834,7 +867,17 @@ export const NetworkPage: React.FC<Props> = ({
           <p className="mt-1 text-xs text-slate-400">{t.playitDesc}</p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {tunnel?.installed && (
+            <button
+              disabled={busyPlayit}
+              onClick={resetPlayitClaim}
+              className="flex items-center gap-1.5 rounded-2xl border border-amber-500/35 bg-amber-500/15 px-3.5 py-2.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/25 disabled:opacity-50"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              {t.playitResetClaimBtn}
+            </button>
+          )}
           {!tunnel?.running ? (
             <button
               disabled={busyPlayit}
@@ -865,18 +908,66 @@ export const NetworkPage: React.FC<Props> = ({
       </div>
 
       {tunnel?.claimUrl && (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3.5">
-          <div className="text-xs text-amber-200">
-            <strong>{t.playitClaimLabel}</strong> {t.playitClaimDesc}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3.5">
+          <div className="min-w-0 flex-1 text-xs text-amber-200">
+            <div>
+              <strong>{t.playitClaimLabel}</strong> {t.playitClaimDesc}
+            </div>
+            <div className="mt-1 truncate font-mono text-[11px] text-amber-300 underline">
+              {tunnel.claimUrl}
+            </div>
           </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <button
+              onClick={() => copyText('pclaim', tunnel.claimUrl)}
+              className="flex items-center gap-1 rounded-xl border border-amber-400/40 bg-white/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-white/20"
+            >
+              {copiedKey === 'pclaim' ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+              <span>{copiedKey === 'pclaim' ? t.copied : t.playitCopyClaimBtn}</span>
+            </button>
+            <a
+              href={tunnel.claimUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 hover:brightness-110"
+            >
+              <span>{t.playitClaimBtn}</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </div>
+      )}
+
+      {!tunnel?.claimUrl && (tunnel?.accountStatus === 'email_not_verified' || (tunnel?.disabledTunnels ?? 0) > 0) && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-500/35 bg-amber-500/10 p-3.5">
+          <div className="min-w-0 flex-1 text-xs text-amber-200">
+            {t.playitEmailUnverifiedWarn}
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <a
+              href={tunnel?.dashboardUrl || 'https://playit.gg/account/tunnels'}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 hover:brightness-110"
+            >
+              <span>{t.playitDashboardBtn}</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </div>
+      )}
+
+      {!tunnel?.claimUrl && tunnel?.running && tunnel.dashboardUrl && tunnel.accountStatus !== 'email_not_verified' && (tunnel.disabledTunnels ?? 0) === 0 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-slate-950/60 px-3.5 py-2 text-xs">
+          <span className="truncate font-mono text-[11px] text-slate-300">{tunnel.dashboardUrl}</span>
           <a
-            href={tunnel.claimUrl}
+            href={tunnel.dashboardUrl}
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-1.5 rounded-xl bg-amber-400 px-3.5 py-2 text-xs font-bold text-slate-950 hover:brightness-110"
+            className="flex items-center gap-1 rounded-lg bg-cyan-500/20 px-3 py-1 text-xs font-semibold text-cyan-200 hover:bg-cyan-500/30"
           >
-            <span>{t.playitClaimBtn}</span>
-            <ExternalLink className="h-3.5 w-3.5" />
+            <span>{t.playitDashboardBtn}</span>
+            <ExternalLink className="h-3 w-3" />
           </a>
         </div>
       )}

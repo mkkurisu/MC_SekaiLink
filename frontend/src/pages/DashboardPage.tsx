@@ -299,7 +299,7 @@ export const DashboardPage: React.FC<Props> = ({
 
   const publicJava =
     (e4mcActive && e4mc!.domain) ||
-    (pinggyActive && pinggy!.address) ||
+    (pinggyActive && (pinggy!.directIp || pinggy!.address)) ||
     (playitJavaActive && tunnel!.javaAddress) ||
     (boreActive && bore!.address) ||
     '';
