@@ -62,47 +62,27 @@ type ServerInstance struct {
 }
 
 type AppConfig struct {
-	DataDir         string      `json:"dataDir"`
-	APIPort         int         `json:"apiPort"`
-	BindAddress     string      `json:"bindAddress"`
-	RemoteEnabled   bool        `json:"remoteEnabled"`
-	PairingToken    string      `json:"pairingToken"`
-	Language        string      `json:"language"`
-	JavaPath        string      `json:"javaPath,omitempty"`
-	PlayitAutoStart bool        `json:"playitAutoStart"`
-	RelayNodes      []RelayNode `json:"relayNodes,omitempty"`
-}
-
-type RelayNode struct {
-	ID      string `json:"id"`
-	Address string `json:"address"`
-	Secret  string `json:"secret,omitempty"`
-	TLS     bool   `json:"tls"`
-	CertPin string `json:"certPin,omitempty"`
-	Enabled bool   `json:"enabled"`
-}
-
-type RelayNodeProbe struct {
-	ID        string `json:"id"`
-	Address   string `json:"address"`
-	Online    bool   `json:"online"`
-	NodeID    string `json:"nodeId,omitempty"`
-	LatencyMs int64  `json:"latencyMs,omitempty"`
-	Encrypted bool   `json:"encrypted,omitempty"`
-	Error     string `json:"error,omitempty"`
+	DataDir         string `json:"dataDir"`
+	APIPort         int    `json:"apiPort"`
+	BindAddress     string `json:"bindAddress"`
+	RemoteEnabled   bool   `json:"remoteEnabled"`
+	PairingToken    string `json:"pairingToken"`
+	Language        string `json:"language"`
+	JavaPath        string `json:"javaPath,omitempty"`
+	PlayitAutoStart bool   `json:"playitAutoStart"`
 }
 
 type AutoTunnelResult struct {
-	Provider       string      `json:"provider"` // "relay", "e4mc", "bore"
-	NodeID         string      `json:"nodeId,omitempty"`
-	LatencyMs      int64       `json:"latencyMs,omitempty"`
-	Encrypted      bool        `json:"encrypted,omitempty"`
-	JavaAddress    string      `json:"javaAddress,omitempty"`
-	BedrockAddress string      `json:"bedrockAddress,omitempty"`
-	FallbackReason string      `json:"fallbackReason,omitempty"`
-	Relay          *RelayState `json:"relay,omitempty"`
-	E4mc           *E4mcState  `json:"e4mc,omitempty"`
-	Bore           *BoreState  `json:"bore,omitempty"`
+	Provider       string       `json:"provider"` // "e4mc", "pinggy", "bore"
+	NodeID         string       `json:"nodeId,omitempty"`
+	LatencyMs      int64        `json:"latencyMs,omitempty"`
+	Encrypted      bool         `json:"encrypted,omitempty"`
+	JavaAddress    string       `json:"javaAddress,omitempty"`
+	BedrockAddress string       `json:"bedrockAddress,omitempty"`
+	FallbackReason string       `json:"fallbackReason,omitempty"`
+	E4mc           *E4mcState   `json:"e4mc,omitempty"`
+	Pinggy         *PinggyState `json:"pinggy,omitempty"`
+	Bore           *BoreState   `json:"bore,omitempty"`
 }
 
 type ConsoleLine struct {
@@ -266,8 +246,10 @@ type NetworkDiagnostics struct {
 	Recommendation   string `json:"recommendation"`
 	E4mcRegion       string `json:"e4mcRegion,omitempty"`
 	E4mcPingMs       int64  `json:"e4mcPingMs,omitempty"`
+	PinggyPingMs     int64  `json:"pinggyPingMs,omitempty"`
 	PlayitPingMs     int64  `json:"playitPingMs,omitempty"`
 	BorePingMs       int64  `json:"borePingMs,omitempty"`
+	IPv6Address      string `json:"ipv6Address,omitempty"`
 }
 
 type TunnelState struct {
@@ -303,17 +285,45 @@ type E4mcState struct {
 	LastError string `json:"lastError,omitempty"`
 }
 
-type RelayState struct {
-	Running          bool   `json:"running"`
-	NodeID           string `json:"nodeId,omitempty"`
-	Encrypted        bool   `json:"encrypted,omitempty"`
-	RelayAddr        string `json:"relayAddr"`
-	LocalJavaPort    int    `json:"localJavaPort"`
-	LocalBedrockPort int    `json:"localBedrockPort"`
-	JavaAddress      string `json:"javaAddress"`
-	BedrockAddress   string `json:"bedrockAddress"`
-	LatencyMs        int64  `json:"latencyMs,omitempty"`
-	LastError        string `json:"lastError,omitempty"`
+type PinggyState struct {
+	Running   bool   `json:"running"`
+	Region    string `json:"region"`
+	Server    string `json:"server"`
+	LocalPort int    `json:"localPort"`
+	Address   string `json:"address"`
+	LatencyMs int64  `json:"latencyMs,omitempty"`
+	HasToken  bool   `json:"hasToken,omitempty"`
+	StartedAt int64  `json:"startedAt,omitempty"`
+	ExpiresAt int64  `json:"expiresAt,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+}
+
+type P2PPeerInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	RemoteAddr  string `json:"remoteAddr"`
+	LatencyMs   int64  `json:"latencyMs"`
+	ConnectedAt int64  `json:"connectedAt"`
+}
+
+type P2PState struct {
+	Running          bool          `json:"running"`
+	Mode             string        `json:"mode"`  // "", "host", "join"
+	Phase            string        `json:"phase"` // "idle", "discovering", "waiting", "punching", "connected", "error"
+	RoomCode         string        `json:"roomCode,omitempty"`
+	NATType          string        `json:"natType,omitempty"` // "cone", "symmetric", "unknown"
+	PublicEndpoint   string        `json:"publicEndpoint,omitempty"`
+	LocalJavaPort    int           `json:"localJavaPort,omitempty"`
+	LocalBedrockPort int           `json:"localBedrockPort,omitempty"`
+	LocalJavaAddr    string        `json:"localJavaAddr,omitempty"`
+	LocalBedrockAddr string        `json:"localBedrockAddr,omitempty"`
+	WantJava         bool          `json:"wantJava,omitempty"`
+	WantBedrock      bool          `json:"wantBedrock,omitempty"`
+	PeerCount        int           `json:"peerCount"`
+	Peers            []P2PPeerInfo `json:"peers,omitempty"`
+	LatencyMs        int64         `json:"latencyMs,omitempty"`
+	SignalingStatus  string        `json:"signalingStatus,omitempty"`
+	LastError        string        `json:"lastError,omitempty"`
 }
 
 type WSMessage struct {

@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, getRemoteConnection } from './lib/api';
 import { Lang, translations } from './lib/i18n';
-import { AppConfig, BoreState, E4mcState, RelayState, ServerInstance, SystemOverview, TunnelState } from './types';
+import { AppConfig, BoreState, E4mcState, P2PState, PinggyState, ServerInstance, SystemOverview, TunnelState } from './types';
 import { CreateServerModal } from './components/CreateServerModal';
 import { DashboardPage } from './pages/DashboardPage';
 import { ConsolePage } from './pages/ConsolePage';
@@ -36,26 +36,29 @@ export function App() {
   const [tunnel, setTunnel] = useState<TunnelState | null>(null);
   const [bore, setBore] = useState<BoreState | null>(null);
   const [e4mc, setE4mc] = useState<E4mcState | null>(null);
-  const [relay, setRelay] = useState<RelayState | null>(null);
+  const [pinggy, setPinggy] = useState<PinggyState | null>(null);
+  const [p2p, setP2P] = useState<P2PState | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
   const refreshTunnels = () => {
     apiFetch<TunnelState>('/api/network/playit/status').then(setTunnel).catch(() => {});
     apiFetch<BoreState>('/api/network/bore/status').then(setBore).catch(() => {});
     apiFetch<E4mcState>('/api/network/e4mc/status').then(setE4mc).catch(() => {});
-    apiFetch<RelayState>('/api/network/relay/status').then(setRelay).catch(() => {});
+    apiFetch<PinggyState>('/api/network/pinggy/status').then(setPinggy).catch(() => {});
+    apiFetch<P2PState>('/api/network/p2p/status').then(setP2P).catch(() => {});
   };
 
   const loadAll = async () => {
     try {
-      const [srvs, sys, cfg, tun, br, em, rl] = await Promise.all([
+      const [srvs, sys, cfg, tun, br, em, pg, p2pSt] = await Promise.all([
         apiFetch<ServerInstance[]>('/api/servers'),
         apiFetch<SystemOverview>('/api/system'),
         apiFetch<AppConfig>('/api/config'),
         apiFetch<TunnelState>('/api/network/playit/status'),
         apiFetch<BoreState>('/api/network/bore/status'),
         apiFetch<E4mcState>('/api/network/e4mc/status'),
-        apiFetch<RelayState>('/api/network/relay/status'),
+        apiFetch<PinggyState>('/api/network/pinggy/status'),
+        apiFetch<P2PState>('/api/network/p2p/status'),
       ]);
       setServers(srvs || []);
       setSystem(sys);
@@ -63,7 +66,8 @@ export function App() {
       setTunnel(tun);
       setBore(br);
       setE4mc(em);
-      setRelay(rl);
+      setPinggy(pg);
+      setP2P(p2pSt);
       if (cfg?.language === 'en' || cfg?.language === 'tr') {
         setLang(cfg.language);
       }
@@ -238,9 +242,11 @@ export function App() {
                   tunnel={tunnel}
                   bore={bore}
                   e4mc={e4mc}
-                  relay={relay}
+                  pinggy={pinggy}
+                  p2p={p2p}
                   lang={lang}
                   onRefresh={loadAll}
+                  onRefreshTunnel={refreshTunnels}
                   onOpenCreate={() => setCreateOpen(true)}
                   onNavigate={setTab}
                 />
@@ -257,7 +263,8 @@ export function App() {
                   tunnel={tunnel}
                   bore={bore}
                   e4mc={e4mc}
-                  relay={relay}
+                  pinggy={pinggy}
+                  p2p={p2p}
                   lang={lang}
                   onRefreshTunnel={refreshTunnels}
                   onRefreshConfig={() => apiFetch<AppConfig>('/api/config').then(setConfig).catch(() => {})}

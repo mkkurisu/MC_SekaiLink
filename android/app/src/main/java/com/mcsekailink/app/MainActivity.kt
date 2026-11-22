@@ -240,6 +240,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun readFromClipboard(): String {
+            return try {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = cm.primaryClip
+                if (clip != null && clip.itemCount > 0) {
+                    clip.getItemAt(0).coerceToText(this@MainActivity)?.toString() ?: ""
+                } else {
+                    ""
+                }
+            } catch (_: Exception) {
+                ""
+            }
+        }
+
+        @JavascriptInterface
         fun stopLocalService() {
             val stopIntent = Intent(this@MainActivity, ServerForegroundService::class.java).apply {
                 action = ServerForegroundService.ACTION_STOP

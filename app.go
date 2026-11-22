@@ -50,6 +50,7 @@ func (a *App) GetAPIBaseURL() string {
 }
 
 func createRuntimeServices(dataDir string) (*storage.Store, *engine.Manager, *network.PlayitManager, *api.Server, error) {
+	network.InitTLSRootCAs()
 	network.InitDNSResolver()
 	store, err := storage.NewStore(dataDir)
 	if err != nil {

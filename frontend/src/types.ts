@@ -45,25 +45,6 @@ export interface ServerInstance {
   lastError?: string;
 }
 
-export interface RelayNode {
-  id: string;
-  address: string;
-  secret?: string;
-  tls: boolean;
-  certPin?: string;
-  enabled: boolean;
-}
-
-export interface RelayNodeProbe {
-  id: string;
-  address: string;
-  online: boolean;
-  nodeId?: string;
-  latencyMs?: number;
-  encrypted?: boolean;
-  error?: string;
-}
-
 export interface AppConfig {
   dataDir: string;
   apiPort: number;
@@ -73,7 +54,6 @@ export interface AppConfig {
   language: 'tr' | 'en';
   javaPath?: string;
   playitAutoStart: boolean;
-  relayNodes?: RelayNode[];
 }
 
 export interface ConsoleLine {
@@ -211,8 +191,10 @@ export interface NetworkDiagnostics {
   recommendation: string;
   e4mcRegion?: string;
   e4mcPingMs?: number;
+  pinggyPingMs?: number;
   playitPingMs?: number;
   borePingMs?: number;
+  ipv6Address?: string;
 }
 
 export interface TunnelState {
@@ -248,28 +230,56 @@ export interface E4mcState {
   lastError?: string;
 }
 
-export interface RelayState {
+export interface PinggyState {
   running: boolean;
-  nodeId?: string;
-  encrypted?: boolean;
-  relayAddr: string;
-  localJavaPort: number;
-  localBedrockPort: number;
-  javaAddress: string;
-  bedrockAddress: string;
+  region: string;
+  server: string;
+  localPort: number;
+  address: string;
   latencyMs?: number;
+  hasToken?: boolean;
+  startedAt?: number;
+  expiresAt?: number;
+  lastError?: string;
+}
+
+export interface P2PPeerInfo {
+  id: string;
+  name: string;
+  remoteAddr: string;
+  latencyMs: number;
+  connectedAt: number;
+}
+
+export interface P2PState {
+  running: boolean;
+  mode: '' | 'host' | 'join' | string;
+  phase: 'idle' | 'discovering' | 'waiting' | 'punching' | 'connected' | 'error' | string;
+  roomCode?: string;
+  natType?: 'cone' | 'symmetric' | 'unknown' | string;
+  publicEndpoint?: string;
+  localJavaPort?: number;
+  localBedrockPort?: number;
+  localJavaAddr?: string;
+  localBedrockAddr?: string;
+  wantJava?: boolean;
+  wantBedrock?: boolean;
+  peerCount: number;
+  peers?: P2PPeerInfo[];
+  latencyMs?: number;
+  signalingStatus?: string;
   lastError?: string;
 }
 
 export interface AutoTunnelResult {
-  provider: 'relay' | 'e4mc' | 'bore' | string;
+  provider: 'e4mc' | 'pinggy' | 'bore' | string;
   nodeId?: string;
   latencyMs?: number;
   encrypted?: boolean;
   javaAddress?: string;
   bedrockAddress?: string;
   fallbackReason?: string;
-  relay?: RelayState;
   e4mc?: E4mcState;
+  pinggy?: PinggyState;
   bore?: BoreState;
 }

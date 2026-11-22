@@ -4,15 +4,14 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ClipboardPaste,
   Copy,
   Download,
   ExternalLink,
   Globe,
   Info,
   Loader2,
-  Lock,
   Play,
-  Plus,
   QrCode,
   Radio,
   RefreshCw,
@@ -20,20 +19,18 @@ import {
   ShieldCheck,
   Smartphone,
   Square,
-  Trash2,
+  Users,
   Zap,
 } from 'lucide-react';
-import { apiFetch, copyTextSafe } from '../lib/api';
+import { apiFetch, copyTextSafe, pasteTextSafe } from '../lib/api';
 import { Lang, translations } from '../lib/i18n';
 import {
   AppConfig,
-  AutoTunnelResult,
   BoreState,
   E4mcState,
   NetworkDiagnostics,
-  RelayNode,
-  RelayNodeProbe,
-  RelayState,
+  P2PState,
+  PinggyState,
   ServerInstance,
   SystemOverview,
   TunnelState,
@@ -47,7 +44,8 @@ interface Props {
   tunnel: TunnelState | null;
   bore: BoreState | null;
   e4mc: E4mcState | null;
-  relay: RelayState | null;
+  pinggy: PinggyState | null;
+  p2p: P2PState | null;
   lang: Lang;
   onRefreshTunnel: () => void;
   onRefreshConfig: () => void;
@@ -60,7 +58,8 @@ export const NetworkPage: React.FC<Props> = ({
   tunnel,
   bore,
   e4mc,
-  relay,
+  pinggy,
+  p2p,
   lang,
   onRefreshTunnel,
   onRefreshConfig,
@@ -68,23 +67,26 @@ export const NetworkPage: React.FC<Props> = ({
   const t = translations[lang].network;
   const [diag, setDiag] = useState<NetworkDiagnostics | null>(null);
   const [loadingDiag, setLoadingDiag] = useState(false);
+
+  const [busyP2P, setBusyP2P] = useState(false);
+  const [busyPinggy, setBusyPinggy] = useState(false);
   const [busyPlayit, setBusyPlayit] = useState(false);
   const [busyE4mc, setBusyE4mc] = useState(false);
   const [busyBore, setBusyBore] = useState(false);
-  const [busyRelay, setBusyRelay] = useState(false);
-  const [probingRelay, setProbingRelay] = useState(false);
   const [busyUpnp, setBusyUpnp] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const [boreHost, setBoreHost] = useState('bore.pub');
-  const [relayNodes, setRelayNodes] = useState<RelayNode[]>(() => config?.relayNodes || []);
-  const [relayProbes, setRelayProbes] = useState<Record<string, RelayNodeProbe>>({});
+  const [p2pTab, setP2PTab] = useState<'host' | 'join'>(() => {
+    if (p2p?.running && p2p.mode === 'join') return 'join';
+    if (p2p?.running && p2p.mode === 'host') return 'host';
+    return server ? 'host' : 'join';
+  });
+  const [p2pCodeInput, setP2PCodeInput] = useState('');
+  const [p2pNickInput, setP2PNickInput] = useState('');
 
-  const [newNodeId, setNewNodeId] = useState('SV-Oracle');
-  const [newNodeAddr, setNewNodeAddr] = useState(() => localStorage.getItem('sekailink_relay_addr') || '');
-  const [newNodeSecret, setNewNodeSecret] = useState('');
-  const [newNodePin, setNewNodePin] = useState('');
-  const [newNodeTLS, setNewNodeTLS] = useState(true);
+  const [pinggyRegion, setPinggyRegion] = useState('eu');
+  const [pinggyToken, setPinggyToken] = useState('');
+  const [boreHost, setBoreHost] = useState('bore.pub');
 
   const [msg, setMsg] = useState('');
   const [copiedKey, setCopiedKey] = useState('');
@@ -95,10 +97,10 @@ export const NetworkPage: React.FC<Props> = ({
   }, []);
 
   useEffect(() => {
-    if (config?.relayNodes) {
-      setRelayNodes(config.relayNodes);
+    if (p2p?.running && (p2p.mode === 'host' || p2p.mode === 'join')) {
+      setP2PTab(p2p.mode);
     }
-  }, [config?.relayNodes]);
+  }, [p2p?.running, p2p?.mode]);
 
   const isPureJava = Boolean(
     server && server.engine !== 'bds' && server.engine !== 'powernukkitx' && !server.crossPlay?.enabled,
@@ -129,77 +131,11 @@ export const NetworkPage: React.FC<Props> = ({
     }
   };
 
-  const probeRelayNodes = async () => {
-    setProbingRelay(true);
-    try {
-      const list = await apiFetch<RelayNodeProbe[]>('/api/network/relay/probe');
-      const map: Record<string, RelayNodeProbe> = {};
-      for (const p of list || []) {
-        map[p.address] = p;
-      }
-      setRelayProbes(map);
-    } catch {
-      // ignore
-    } finally {
-      setProbingRelay(false);
-    }
-  };
-
-  const saveRelayNodes = async (next: RelayNode[]) => {
-    const saved = await apiFetch<RelayNode[]>('/api/network/relay/nodes', {
-      method: 'PUT',
-      body: JSON.stringify({ nodes: next }),
-    });
-    setRelayNodes(saved || []);
-    onRefreshConfig();
-    return saved || [];
-  };
-
-  const addRelayNode = async () => {
-    const addr = newNodeAddr.trim();
-    if (!addr) return;
-    setBusyRelay(true);
+  const startP2PHost = async () => {
+    setBusyP2P(true);
     setMsg('');
     try {
-      localStorage.setItem('sekailink_relay_addr', addr);
-      const next: RelayNode[] = [
-        ...relayNodes,
-        {
-          id: newNodeId.trim() || addr,
-          address: addr,
-          secret: newNodeSecret.trim(),
-          certPin: newNodePin.trim(),
-          tls: newNodeTLS,
-          enabled: true,
-        },
-      ];
-      await saveRelayNodes(next);
-      setNewNodeAddr('');
-      setNewNodeSecret('');
-      setNewNodePin('');
-      await probeRelayNodes();
-    } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : t.relayErr);
-    } finally {
-      setBusyRelay(false);
-    }
-  };
-
-  const toggleNodeEnabled = async (idx: number) => {
-    const next = relayNodes.map((n, i) => (i === idx ? { ...n, enabled: !n.enabled } : n));
-    await saveRelayNodes(next);
-  };
-
-  const deleteRelayNode = async (idx: number) => {
-    const next = relayNodes.filter((_, i) => i !== idx);
-    await saveRelayNodes(next);
-  };
-
-  const autoConnectFastestBridge = async () => {
-    setBusyRelay(true);
-    setMsg('');
-    try {
-      const res = await apiFetch<AutoTunnelResult>('/api/network/tunnel/auto-start', {
+      const st = await apiFetch<P2PState>('/api/network/p2p/host', {
         method: 'POST',
         body: JSON.stringify({
           localJavaPort,
@@ -208,53 +144,45 @@ export const NetworkPage: React.FC<Props> = ({
           wantBedrock: wantBedrockForServer,
         }),
       });
-      if (res.provider === 'relay') {
-        setMsg(`${t.relayConnectedBridge} ${res.nodeId || 'SV-Relay'} (${res.latencyMs || 0} ms${res.encrypted ? ' • TLS 1.3' : ''})`);
-      } else {
-        const fallbackNote = res.fallbackReason ? `${t.relayFallbackNoticePrefix} ${res.fallbackReason} → ` : '';
-        setMsg(`${fallbackNote}${res.nodeId || res.provider}: ${res.javaAddress || ''}`);
-      }
+      setMsg(`${t.p2pOpenedMsg} ${st.roomCode || ''}`);
       onRefreshTunnel();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : t.relayErr);
+      setMsg(e instanceof Error ? e.message : t.p2pErr);
     } finally {
-      setBusyRelay(false);
+      setBusyP2P(false);
     }
   };
 
-  const connectSingleNode = async (node: RelayNode) => {
-    setBusyRelay(true);
+  const startP2PJoin = async () => {
+    if (!p2pCodeInput.trim()) return;
+    setBusyP2P(true);
     setMsg('');
     try {
-      const st = await apiFetch<RelayState>('/api/network/relay/start', {
+      await apiFetch<P2PState>('/api/network/p2p/join', {
         method: 'POST',
         body: JSON.stringify({
-          relayAddr: node.address,
-          secret: node.secret || '',
-          tls: node.tls,
-          certPin: node.certPin || '',
-          localJavaPort,
-          localBedrockPort,
-          wantJava: wantJavaForServer,
-          wantBedrock: wantBedrockForServer,
+          roomCode: p2pCodeInput.trim(),
+          peerName: p2pNickInput.trim(),
+          preferredJavaPort: 25565,
+          preferredBedrockPort: 19132,
         }),
       });
-      setMsg(`${t.relayConnectedBridge} ${st.nodeId || node.id} (${st.latencyMs || 0} ms)`);
+      setMsg(t.p2pJoinedMsg);
       onRefreshTunnel();
     } catch (e: unknown) {
-      setMsg(e instanceof Error ? e.message : t.relayErr);
+      setMsg(e instanceof Error ? e.message : t.p2pErr);
     } finally {
-      setBusyRelay(false);
+      setBusyP2P(false);
     }
   };
 
-  const stopRelay = async () => {
-    setBusyRelay(true);
+  const stopP2P = async () => {
+    setBusyP2P(true);
     try {
-      await apiFetch('/api/network/relay/stop', { method: 'POST' });
+      await apiFetch('/api/network/p2p/stop', { method: 'POST' });
       onRefreshTunnel();
     } finally {
-      setBusyRelay(false);
+      setBusyP2P(false);
     }
   };
 
@@ -282,6 +210,37 @@ export const NetworkPage: React.FC<Props> = ({
       onRefreshTunnel();
     } finally {
       setBusyE4mc(false);
+    }
+  };
+
+  const startPinggy = async () => {
+    setBusyPinggy(true);
+    setMsg('');
+    try {
+      const st = await apiFetch<PinggyState>('/api/network/pinggy/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          region: pinggyRegion,
+          token: pinggyToken.trim(),
+          localPort: localJavaPort,
+        }),
+      });
+      setMsg(`${t.pinggyOpenedMsg} ${st.address}`);
+      onRefreshTunnel();
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : t.pinggyErr);
+    } finally {
+      setBusyPinggy(false);
+    }
+  };
+
+  const stopPinggy = async () => {
+    setBusyPinggy(true);
+    try {
+      await apiFetch('/api/network/pinggy/stop', { method: 'POST' });
+      onRefreshTunnel();
+    } finally {
+      setBusyPinggy(false);
     }
   };
 
@@ -368,208 +327,254 @@ export const NetworkPage: React.FC<Props> = ({
   const pairingUrl = `http://${diag?.localIP || system?.localIP || '127.0.0.1'}:${config?.apiPort || 25580}`;
   const pairingPayload = JSON.stringify({ url: pairingUrl, token: config?.pairingToken || '' });
 
-  const renderRelayCard = () => (
-    <div className="glass-panel rounded-3xl border border-violet-500/30 p-5">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+  const remainingPinggyMin =
+    pinggy?.running && pinggy.expiresAt
+      ? Math.max(0, Math.ceil((pinggy.expiresAt - Math.floor(Date.now() / 1000)) / 60))
+      : null;
+
+  const renderNatPill = (nat?: string) => {
+    if (nat === 'cone') {
+      return (
+        <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-200">
+          {t.p2pNatCone}
+        </span>
+      );
+    }
+    if (nat === 'symmetric') {
+      return (
+        <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-amber-200">
+          {t.p2pNatSymmetric}
+        </span>
+      );
+    }
+    return (
+      <span className="rounded-full border border-white/15 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold text-slate-300">
+        {t.p2pNatUnknown}
+      </span>
+    );
+  };
+
+  const renderP2PCard = () => (
+    <div className="glass-panel rounded-3xl border border-violet-500/35 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <Radio className="h-5 w-5 text-violet-400" />
-            <h3 className="text-base font-bold text-white">{t.relayTitle}</h3>
+            <h3 className="text-base font-bold text-white">{t.p2pTitle}</h3>
             <span className="rounded-full bg-violet-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-violet-300">
-              {t.relayBadge}
+              {t.p2pBadge}
             </span>
-            {relay?.running && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[11px] font-bold text-emerald-200">
-                {t.relayConnectedBridge} {relay.nodeId || 'SV-Relay'} • {relay.latencyMs || 0} ms
-                {relay.encrypted ? ' • TLS' : ''}
-              </span>
-            )}
+            {p2p?.running && renderNatPill(p2p.natType)}
           </div>
-          <p className="mt-1 text-xs text-slate-400">{t.relayDesc}</p>
+          <p className="mt-1 text-xs text-slate-400">{t.p2pDesc}</p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Mode Segmented Toggle */}
+        <div className="flex rounded-2xl border border-white/15 bg-slate-950/70 p-1">
           <button
-            disabled={probingRelay || relayNodes.length === 0}
-            onClick={probeRelayNodes}
-            className="flex items-center gap-1.5 rounded-2xl border border-white/15 bg-white/5 px-3.5 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-40"
+            type="button"
+            disabled={p2p?.running && p2p.mode === 'join'}
+            onClick={() => setP2PTab('host')}
+            className={`rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
+              p2pTab === 'host'
+                ? 'bg-violet-500 text-slate-950 shadow'
+                : 'text-slate-300 hover:text-white disabled:opacity-40'
+            }`}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${probingRelay ? 'animate-spin' : ''}`} />
-            {t.relayProbeBtn}
+            {t.p2pTabHost}
           </button>
-
-          {!relay?.running ? (
-            <button
-              disabled={busyRelay}
-              onClick={autoConnectFastestBridge}
-              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:brightness-110 disabled:opacity-50"
-            >
-              {busyRelay ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-              {t.relayAutoBtn}
-            </button>
-          ) : (
-            <button
-              disabled={busyRelay}
-              onClick={stopRelay}
-              className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
-            >
-              <Square className="h-4 w-4 fill-current" />
-              {t.relayDisconnectBtn}
-            </button>
-          )}
+          <button
+            type="button"
+            disabled={p2p?.running && p2p.mode === 'host'}
+            onClick={() => setP2PTab('join')}
+            className={`rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
+              p2pTab === 'join'
+                ? 'bg-cyan-500 text-slate-950 shadow'
+                : 'text-slate-300 hover:text-white disabled:opacity-40'
+            }`}
+          >
+            {t.p2pTabJoin}
+          </button>
         </div>
       </div>
 
-      {/* Add VDS node form */}
-      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-12">
-        <input
-          value={newNodeId}
-          onChange={(e) => setNewNodeId(e.target.value)}
-          placeholder={t.relayNodeIdPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
-        />
-        <input
-          value={newNodeAddr}
-          onChange={(e) => setNewNodeAddr(e.target.value)}
-          placeholder={t.relayNodeAddrPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-3"
-        />
-        <input
-          value={newNodeSecret}
-          onChange={(e) => setNewNodeSecret(e.target.value)}
-          type="password"
-          placeholder={t.relayNodeSecretPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
-        />
-        <input
-          value={newNodePin}
-          onChange={(e) => setNewNodePin(e.target.value)}
-          placeholder={t.relayNodePinPlaceholder}
-          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-2 font-mono text-xs text-white outline-none focus:border-violet-500 lg:col-span-2"
-        />
-        <label className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-slate-950/70 px-2.5 py-2 text-xs text-slate-300 lg:col-span-1">
-          <input
-            type="checkbox"
-            checked={newNodeTLS}
-            onChange={(e) => setNewNodeTLS(e.target.checked)}
-            className="h-3.5 w-3.5 accent-violet-500"
-          />
-          <span>TLS</span>
-        </label>
-        <button
-          disabled={busyRelay || !newNodeAddr.trim()}
-          onClick={addRelayNode}
-          className="flex items-center justify-center gap-1.5 rounded-xl bg-violet-500/25 px-3 py-2 text-xs font-semibold text-violet-200 hover:bg-violet-500/35 disabled:opacity-40 lg:col-span-2"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          {t.relayAddNodeBtn}
-        </button>
-      </div>
-
-      {/* Saved VDS Node List */}
-      {relayNodes.length === 0 ? (
-        <div className="mt-3 rounded-xl border border-dashed border-white/15 bg-slate-950/40 px-3.5 py-2.5 text-xs text-slate-400">
-          {t.relayNoNodesHint}
-        </div>
-      ) : (
-        <div className="mt-3 space-y-2">
-          {relayNodes.map((node, idx) => {
-            const addrKey = node.address.includes(':') ? node.address : `${node.address}:25590`;
-            const probe = relayProbes[addrKey] || relayProbes[node.address];
-            const isConnectedThis = Boolean(relay?.running && relay.relayAddr === addrKey);
-            return (
-              <div
-                key={`${node.id}-${node.address}-${idx}`}
-                className={`flex flex-wrap items-center justify-between gap-2 rounded-2xl border px-3.5 py-2.5 text-xs ${
-                  isConnectedThis
-                    ? 'border-emerald-500/40 bg-emerald-500/10'
-                    : 'border-white/10 bg-slate-950/60'
-                }`}
+      {p2pTab === 'host' ? (
+        <div className="mt-4 space-y-3">
+          {!p2p?.running || p2p.mode !== 'host' ? (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <div className="text-xs text-slate-300">
+                {wantJavaForServer && <span className="mr-3 font-mono text-emerald-300">Java TCP :{localJavaPort}</span>}
+                {wantBedrockForServer && <span className="font-mono text-cyan-300">Bedrock UDP :{localBedrockPort}</span>}
+              </div>
+              <button
+                disabled={busyP2P}
+                onClick={startP2PHost}
+                className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-violet-500 to-cyan-500 px-5 py-2.5 text-sm font-bold text-slate-950 shadow-lg shadow-violet-500/20 hover:brightness-110 disabled:opacity-50"
               >
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={node.enabled}
-                    onChange={() => toggleNodeEnabled(idx)}
-                    className="h-3.5 w-3.5 accent-emerald-500"
-                  />
-                  <span className={`font-mono font-bold ${node.enabled ? 'text-white' : 'text-slate-500 line-through'}`}>
-                    {probe?.nodeId || node.id}
-                  </span>
-                  <span className="font-mono text-slate-400">{node.address}</span>
-                  <span className="inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-0.5 text-[10px] text-slate-300">
-                    <Lock className="h-2.5 w-2.5 text-violet-300" />
-                    {node.tls ? t.relayEncryptedBadge : t.relayPlainBadge}
-                  </span>
-                  {probe && (
-                    probe.online ? (
-                      <PingPill label={probe.nodeId || node.id} ms={probe.latencyMs || 1} />
-                    ) : (
-                      <span className="rounded-full border border-rose-500/35 bg-rose-500/15 px-2 py-0.5 text-[10px] text-rose-300">
-                        {t.relayOfflineBadge}
-                      </span>
-                    )
-                  )}
+                {busyP2P ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+                {t.p2pOpenRoomBtn}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-3.5">
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-emerald-300">
+                    {t.p2pRoomCodeLabel}
+                  </div>
+                  <div className="mt-0.5 font-mono text-2xl font-black tracking-[0.18em] text-white">
+                    {p2p.roomCode}
+                  </div>
+                  <div className="mt-1 text-[11px] text-slate-300">{t.p2pShareHint}</div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    disabled={busyRelay || isConnectedThis}
-                    onClick={() => connectSingleNode(node)}
-                    className="rounded-xl bg-violet-500/20 px-3 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30 disabled:opacity-40"
+                    onClick={() => p2p.roomCode && setQrModal({ title: t.p2pRoomCodeLabel, subtitle: t.p2pShareHint, value: p2p.roomCode })}
+                    className="rounded-xl bg-white/10 p-2.5 text-slate-200 hover:bg-white/20"
+                    title={t.qrCodeTitle}
                   >
-                    {t.relayConnectBtn}
+                    <QrCode className="h-4 w-4" />
                   </button>
                   <button
-                    onClick={() => deleteRelayNode(idx)}
-                    title={t.relayDeleteNodeTitle}
-                    className="rounded-xl bg-rose-500/15 p-1.5 text-rose-300 hover:bg-rose-500/25"
+                    onClick={() => p2p.roomCode && copyText('p2p-room', p2p.roomCode)}
+                    className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:brightness-110"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    {copiedKey === 'p2p-room' ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    {copiedKey === 'p2p-room' ? t.copied : t.copy}
+                  </button>
+                  <button
+                    disabled={busyP2P}
+                    onClick={stopP2P}
+                    className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-4 py-2.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                    {t.p2pCloseRoomBtn}
                   </button>
                 </div>
               </div>
-            );
-          })}
+
+              {/* Connected Peers List */}
+              <div className="rounded-2xl border border-white/10 bg-slate-950/60 p-3.5">
+                <div className="mb-2 flex items-center justify-between text-xs">
+                  <span className="flex items-center gap-1.5 font-semibold text-slate-200">
+                    <Users className="h-3.5 w-3.5 text-violet-400" />
+                    {t.p2pPeersTitle} ({p2p.peerCount})
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {p2p.phase === 'connected' ? t.p2pPhaseConnected : t.p2pPhaseWaiting}
+                  </span>
+                </div>
+                {!p2p.peers || p2p.peers.length === 0 ? (
+                  <p className="text-xs text-slate-500">{t.p2pNoPeers}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {p2p.peers.map((peer) => (
+                      <div key={peer.id} className="flex items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs">
+                        <span className="font-semibold text-white">{peer.name}</span>
+                        <span className="font-mono text-[11px] text-emerald-300">
+                          {peer.latencyMs > 0 ? `${peer.latencyMs} ms` : '...'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="mt-4 space-y-3">
+          {!p2p?.running || p2p.mode !== 'join' ? (
+            <div className="grid gap-2.5 sm:grid-cols-12">
+              <input
+                value={p2pCodeInput}
+                onChange={(e) => setP2PCodeInput(e.target.value.toUpperCase())}
+                placeholder={t.p2pJoinPlaceholder}
+                className="rounded-2xl border border-white/15 bg-slate-950/85 px-4 py-2.5 text-center font-mono text-sm font-bold tracking-widest text-white outline-none focus:border-cyan-400 sm:col-span-5"
+              />
+              <input
+                value={p2pNickInput}
+                onChange={(e) => setP2PNickInput(e.target.value)}
+                placeholder={t.p2pNickPlaceholder}
+                className="rounded-2xl border border-white/10 bg-slate-950/80 px-3.5 py-2.5 text-xs text-white outline-none focus:border-cyan-400 sm:col-span-3"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  const clip = await pasteTextSafe();
+                  if (clip) setP2PCodeInput(clip.trim().toUpperCase());
+                }}
+                className="flex items-center justify-center gap-1.5 rounded-2xl border border-white/15 bg-white/5 px-3 py-2.5 text-xs font-semibold text-slate-200 hover:bg-white/10 sm:col-span-2"
+              >
+                <ClipboardPaste className="h-3.5 w-3.5" />
+                {t.p2pPasteBtn}
+              </button>
+              <button
+                disabled={busyP2P || !p2pCodeInput.trim()}
+                onClick={startP2PJoin}
+                className="flex items-center justify-center gap-1.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-emerald-500 px-4 py-2.5 text-xs font-bold text-slate-950 hover:brightness-110 disabled:opacity-50 sm:col-span-2"
+              >
+                {busyP2P ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-3.5 w-3.5 fill-current" />}
+                {busyP2P ? t.p2pConnectingBtn : t.p2pJoinBtn}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-bold text-emerald-200">
+                    ● {t.p2pConnectedBanner} ({p2p.roomCode})
+                  </span>
+                  <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 font-mono font-bold text-emerald-300">
+                    {p2p.latencyMs || 1} ms
+                  </span>
+                </div>
+                <button
+                  disabled={busyP2P}
+                  onClick={stopP2P}
+                  className="flex items-center gap-1.5 rounded-xl border border-rose-500/40 bg-rose-500/20 px-3.5 py-1.5 text-xs font-semibold text-rose-200 hover:bg-rose-500/30"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" />
+                  {t.p2pDisconnectBtn}
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                {p2p.localJavaAddr && (
+                  <CopyBox
+                    label={t.p2pLocalJavaLabel}
+                    value={p2p.localJavaAddr}
+                    copied={copiedKey === 'p2p-join-j'}
+                    copyLabel={t.copy}
+                    copiedLabel={t.copied}
+                    qrTitle={t.qrCodeTitle}
+                    onCopy={() => copyText('p2p-join-j', p2p.localJavaAddr!)}
+                    onQr={() => setQrModal({ title: t.p2pLocalJavaLabel, subtitle: t.p2pJoinHowTo, value: p2p.localJavaAddr! })}
+                  />
+                )}
+                {p2p.localBedrockAddr && (
+                  <CopyBox
+                    label={t.p2pLocalBedrockLabel}
+                    value={p2p.localBedrockAddr}
+                    copied={copiedKey === 'p2p-join-b'}
+                    copyLabel={t.copy}
+                    copiedLabel={t.copied}
+                    qrTitle={t.qrCodeTitle}
+                    onCopy={() => copyText('p2p-join-b', p2p.localBedrockAddr!)}
+                    onQr={() => setQrModal({ title: t.p2pLocalBedrockLabel, subtitle: t.p2pJoinHowTo, value: p2p.localBedrockAddr! })}
+                  />
+                )}
+              </div>
+              <p className="text-xs text-slate-300">{t.p2pJoinHowTo}</p>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="mt-2.5 rounded-xl border border-white/10 bg-slate-950/60 px-3 py-2 font-mono text-[11px] text-slate-400">
-        {t.relayCmdHint} <span className="text-violet-300">sekailink-relay --node-id SV-Oracle --public-host VDS_IP --secret GIZLI_ANAHTAR</span>
-      </div>
-
-      {relay?.running && (relay.javaAddress || relay.bedrockAddress) && (
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          {relay.javaAddress && (
-            <CopyBox
-              label={`${t.relayJavaCopy} (${relay.nodeId || 'SV-Relay'} • ${relay.latencyMs || 0} ms)`}
-              value={relay.javaAddress}
-              copied={copiedKey === 'rjava'}
-              copyLabel={t.copy}
-              copiedLabel={t.copied}
-              qrTitle={t.qrCodeTitle}
-              onCopy={() => copyText('rjava', relay.javaAddress)}
-              onQr={() => setQrModal({ title: t.relayJavaQrTitle, subtitle: t.playitQrJavaSub, value: relay.javaAddress })}
-            />
-          )}
-          {relay.bedrockAddress && (
-            <CopyBox
-              label={`${t.relayBedrockCopy} (${relay.nodeId || 'SV-Relay'} • ${relay.latencyMs || 0} ms)`}
-              value={relay.bedrockAddress}
-              copied={copiedKey === 'rbed'}
-              copyLabel={t.copy}
-              copiedLabel={t.copied}
-              qrTitle={t.qrCodeTitle}
-              onCopy={() => copyText('rbed', relay.bedrockAddress)}
-              onQr={() => setQrModal({ title: t.relayBedrockQrTitle, subtitle: t.playitQrBedrockSub, value: relay.bedrockAddress })}
-            />
-          )}
-        </div>
-      )}
-
-      {relay?.lastError && !relay.running && (
+      {p2p?.lastError && !p2p.running && (
         <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
-          {relay.lastError}
+          {p2p.lastError}
         </div>
       )}
     </div>
@@ -642,6 +647,99 @@ export const NetworkPage: React.FC<Props> = ({
       {e4mc?.lastError && !e4mc.running && (
         <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
           {e4mc.lastError}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderPinggyCard = () => (
+    <div className="glass-panel rounded-3xl border border-sky-500/25 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Globe className="h-5 w-5 text-sky-400" />
+            <h3 className="text-base font-bold text-white">{t.pinggyTitle}</h3>
+            <span className="rounded-full bg-sky-500/20 px-2.5 py-0.5 text-[10px] font-bold uppercase text-sky-300">
+              {t.pinggyBadge}
+            </span>
+            {pinggy?.running && pinggy.latencyMs ? (
+              <span className="rounded-full border border-sky-500/35 bg-sky-500/15 px-2.5 py-0.5 font-mono text-[10px] font-bold text-sky-200">
+                {pinggy.region || 'EU'} • {pinggy.latencyMs} ms
+              </span>
+            ) : null}
+            {remainingPinggyMin !== null && (
+              <span className="rounded-full border border-amber-500/35 bg-amber-500/15 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-amber-200">
+                {t.pinggyRemainingPrefix} {remainingPinggyMin} {t.pinggyMinSuffix}
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-slate-400">{t.pinggyDesc}</p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {!pinggy?.running ? (
+            <button
+              disabled={busyPinggy}
+              onClick={startPinggy}
+              className="flex items-center gap-2 rounded-2xl bg-gradient-to-r from-sky-500 to-cyan-500 px-5 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-sky-500/20 hover:brightness-110 disabled:opacity-50"
+            >
+              {busyPinggy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+              {t.pinggyStartBtn}
+            </button>
+          ) : (
+            <button
+              disabled={busyPinggy}
+              onClick={stopPinggy}
+              className="flex items-center gap-2 rounded-2xl border border-rose-500/40 bg-rose-500/20 px-5 py-2.5 text-sm font-semibold text-rose-200 hover:bg-rose-500/30"
+            >
+              <Square className="h-4 w-4 fill-current" />
+              {t.pinggyStopBtn}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-400">{t.pinggyRegionLabel}</span>
+        <select
+          value={pinggyRegion}
+          disabled={Boolean(pinggy?.running)}
+          onChange={(e) => setPinggyRegion(e.target.value)}
+          className="rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 text-xs text-white outline-none focus:border-sky-500 disabled:opacity-60"
+        >
+          <option value="eu">{t.pinggyRegionAuto}</option>
+          <option value="us">{t.pinggyRegionUS}</option>
+          <option value="ap">{t.pinggyRegionAP}</option>
+        </select>
+        <input
+          value={pinggyToken}
+          disabled={Boolean(pinggy?.running)}
+          onChange={(e) => setPinggyToken(e.target.value)}
+          placeholder={t.pinggyTokenPlaceholder}
+          className="min-w-[220px] flex-1 rounded-xl border border-white/10 bg-slate-950/80 px-3 py-1.5 font-mono text-xs text-white outline-none focus:border-sky-500 disabled:opacity-60"
+        />
+      </div>
+
+      <p className="mt-2 text-[11px] text-slate-400">{t.pinggyFreeLimitHint}</p>
+
+      {pinggy?.running && pinggy.address && (
+        <div className="mt-4">
+          <CopyBox
+            label={`${t.pinggyCopyLabel} (${pinggy.region || 'EU'} • ${pinggy.latencyMs || 0} ms)`}
+            value={pinggy.address}
+            copied={copiedKey === 'pinggy'}
+            copyLabel={t.copy}
+            copiedLabel={t.copied}
+            qrTitle={t.qrCodeTitle}
+            onCopy={() => copyText('pinggy', pinggy.address)}
+            onQr={() => setQrModal({ title: t.pinggyQrTitle, subtitle: t.pinggyQrSub, value: pinggy.address })}
+          />
+        </div>
+      )}
+
+      {pinggy?.lastError && !pinggy.running && (
+        <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3.5 py-2 text-xs text-rose-300">
+          {pinggy.lastError}
         </div>
       )}
     </div>
@@ -844,6 +942,11 @@ export const NetworkPage: React.FC<Props> = ({
           <div className="flex items-center gap-2.5">
             <Activity className="h-5 w-5 text-cyan-400" />
             <h2 className="text-base font-bold text-white">{t.diagTitle}</h2>
+            {diag?.ipv6Address && (
+              <span className="rounded-full border border-emerald-500/35 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-bold text-emerald-200">
+                {t.ipv6ReadyBadge}
+              </span>
+            )}
           </div>
           <button
             disabled={loadingDiag}
@@ -866,22 +969,47 @@ export const NetworkPage: React.FC<Props> = ({
           />
         </div>
 
-        {(diag?.e4mcPingMs || diag?.playitPingMs || diag?.borePingMs) ? (
+        {(diag?.e4mcPingMs || diag?.pinggyPingMs || diag?.playitPingMs || diag?.borePingMs) ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/10 pt-3 text-xs">
             <span className="text-slate-400">{t.livePingLabel}</span>
             {diag.e4mcPingMs ? <PingPill label={`e4mc (${diag.e4mcRegion || 'EU'})`} ms={diag.e4mcPingMs} /> : null}
+            {diag.pinggyPingMs ? <PingPill label="pinggy.io (EU)" ms={diag.pinggyPingMs} /> : null}
             {diag.playitPingMs ? <PingPill label="playit.gg (Anycast)" ms={diag.playitPingMs} /> : null}
             {diag.borePingMs ? <PingPill label="bore.pub (US)" ms={diag.borePingMs} /> : null}
           </div>
         ) : null}
+
+        {diag?.ipv6Address && (
+          <div className="mt-3 space-y-1.5 border-t border-white/10 pt-3">
+            <CopyBox
+              label={t.ipv6CopyLabel}
+              value={`[${diag.ipv6Address}]:${wantJavaForServer ? localJavaPort : localBedrockPort}`}
+              copied={copiedKey === 'ipv6'}
+              copyLabel={t.copy}
+              copiedLabel={t.copied}
+              qrTitle={t.qrCodeTitle}
+              onCopy={() => copyText('ipv6', `[${diag.ipv6Address}]:${wantJavaForServer ? localJavaPort : localBedrockPort}`)}
+              onQr={() =>
+                setQrModal({
+                  title: t.ipv6CopyLabel,
+                  subtitle: t.ipv6Tip,
+                  value: `[${diag.ipv6Address}]:${wantJavaForServer ? localJavaPort : localBedrockPort}`,
+                })
+              }
+            />
+            <p className="px-1 text-[11px] text-emerald-200/80">{t.ipv6Tip}</p>
+          </div>
+        )}
       </div>
 
-      {/* Primary VDS Bridge Pool & Server-Aware Tunnels */}
-      {renderRelayCard()}
+      {/* Primary Direct P2P (Host Room / Join Friend) */}
+      {renderP2PCard()}
 
+      {/* Client-Free Tunnels (friends do NOT need MC SekaiLink installed) */}
       {isPureJava ? (
         <>
           {renderE4mcCard()}
+          {renderPinggyCard()}
           <div className="glass-card rounded-2xl">
             <button
               onClick={() => setShowAdvanced(!showAdvanced)}
@@ -906,6 +1034,7 @@ export const NetworkPage: React.FC<Props> = ({
           </div>
           {renderPlayitCard()}
           {isCrossPlay && renderE4mcCard()}
+          {isCrossPlay && renderPinggyCard()}
           {isCrossPlay && (
             <div className="glass-card rounded-2xl">
               <button

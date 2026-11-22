@@ -27,11 +27,13 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 		upnpOK     bool
 		e4mcRegion string
 		e4mcPing   int64
+		pinggyPing int64
 		playitPing int64
 		borePing   int64
+		ipv6Addr   string
 	)
 
-	wg.Add(5)
+	wg.Add(7)
 	go func() {
 		defer wg.Done()
 		publicIP = fetchPublicIP(ctx)
@@ -61,6 +63,13 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 	}()
 	go func() {
 		defer wg.Done()
+		pinggyPing = probeTCPPing(ctx, "eu.a.pinggy.io:443")
+		if pinggyPing <= 0 {
+			pinggyPing = probeTCPPing(ctx, "free.pinggy.io:443")
+		}
+	}()
+	go func() {
+		defer wg.Done()
 		playitPing = probeTCPPing(ctx, "147.185.221.21:443")
 		if playitPing <= 0 {
 			playitPing = probeTCPPing(ctx, "playit.gg:443")
@@ -70,6 +79,10 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 		defer wg.Done()
 		borePing = probeTCPPing(ctx, "bore.pub:7835")
 	}()
+	go func() {
+		defer wg.Done()
+		ipv6Addr = detectGlobalIPv6()
+	}()
 	wg.Wait()
 
 	diag.PublicIP = publicIP
@@ -77,20 +90,22 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 	diag.RouterExternalIP = extIP
 	diag.E4mcRegion = e4mcRegion
 	diag.E4mcPingMs = e4mcPing
+	diag.PinggyPingMs = pinggyPing
 	diag.PlayitPingMs = playitPing
 	diag.BorePingMs = borePing
+	diag.IPv6Address = ipv6Addr
 
 	if extIP != "" {
 		if isCGNATIP(extIP) || (publicIP != "" && extIP != publicIP) {
 			diag.BehindCGNAT = true
 			diag.Status = "cgnat_detected"
-			diag.Recommendation = "CGNAT tespit edildi. Java icin en dusuk pingli ve hesapsiz e4mc tunelini, Bedrock/Cross-Play icin playit.gg (Anycast) tunelini kullanin."
+			diag.Recommendation = "CGNAT tespit edildi. Arkadaslarinda uygulama varsa en dusuk ping icin Direkt P2P; program indirmeden baglanmalari icin Java'da e4mc / pinggy.io (EU), Bedrock/Cross-Play icin playit.gg kullanin."
 			return diag
 		}
 		if publicIP != "" && extIP == publicIP {
 			diag.BehindCGNAT = false
 			diag.Status = "direct_ok"
-			diag.Recommendation = "Public IP dogrudan erisilebilir gorunuyor. UPnP port acabilir veya e4mc / playit.gg tunellerini kullanabilirsiniz."
+			diag.Recommendation = "Public IP dogrudan erisilebilir gorunuyor. Direkt P2P, UPnP port acma veya e4mc / pinggy.io / playit.gg tunellerini kullanabilirsiniz."
 			return diag
 		}
 	}
@@ -100,9 +115,37 @@ func RunDiagnostics(ctx context.Context) models.NetworkDiagnostics {
 	} else {
 		diag.BehindCGNAT = true
 		diag.Status = "cgnat_detected"
-		diag.Recommendation = "UPnP yanit vermedi veya CGNAT arkasindasiniz. En dusuk ping icin e4mc (Java, hesapsiz) veya playit.gg (Anycast + Bedrock) tuneli onerilir."
+		diag.Recommendation = "UPnP yanit vermedi veya CGNAT arkasindasiniz. En dusuk ms icin Direkt P2P, programsiz giris icin e4mc / pinggy.io (Java) veya playit.gg (Bedrock + Java) onerilir."
 	}
 	return diag
+}
+
+func detectGlobalIPv6() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipNet, ok := a.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipNet.IP
+			if ip == nil || ip.To4() != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+				continue
+			}
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 func probeTCPPing(ctx context.Context, addr string) int64 {

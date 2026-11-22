@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -73,7 +72,7 @@ func TestAPIHealthAuthAndServerCRUD(t *testing.T) {
 	}
 }
 
-func TestAPIAutoStartTunnelWithVDSBridge(t *testing.T) {
+func TestAPIP2PAndPinggyStatusRoutes(t *testing.T) {
 	dir := t.TempDir()
 	store, err := storage.NewStore(dir)
 	if err != nil {
@@ -83,71 +82,47 @@ func TestAPIAutoStartTunnelWithVDSBridge(t *testing.T) {
 	playit := network.NewPlayitManager(store.DataDir(), store.BinDir())
 	srv := NewServer(store, mgr, playit, fstest.MapFS{"index.html": {Data: []byte("<html>ok</html>")}})
 
-	// Start local TLS 1.3 VDS Relay (SV-Oracle)
-	tlsCfg, pin, err := network.GenerateSelfSignedRelayTLS()
-	if err != nil {
-		t.Fatal(err)
+	// 1. P2P idle status
+	reqP2P := httptest.NewRequest(http.MethodGet, "/api/network/p2p/status", nil)
+	reqP2P.RemoteAddr = "127.0.0.1:54321"
+	recP2P := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recP2P, reqP2P)
+	if recP2P.Code != http.StatusOK {
+		t.Fatalf("GET p2p status failed: %d %s", recP2P.Code, recP2P.Body.String())
 	}
-	relayLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	relaySrv := network.NewRelayServerWithOptions(network.RelayServerOptions{
-		NodeID:     "SV-Oracle",
-		PublicHost: "127.0.0.1",
-		Secret:     "sec123",
-		TLSConfig:  tlsCfg,
-	})
-	defer relaySrv.Close()
-	go func() { _ = relaySrv.Serve(relayLn) }()
-
-	// Save VDS node pool via PUT /api/network/relay/nodes
-	nodesBody, _ := json.Marshal(map[string]any{
-		"nodes": []models.RelayNode{{
-			ID:      "SV-Oracle",
-			Address: relayLn.Addr().String(),
-			Secret:  "sec123",
-			TLS:     true,
-			CertPin: pin,
-			Enabled: true,
-		}},
-	})
-	reqSave := httptest.NewRequest(http.MethodPut, "/api/network/relay/nodes", bytes.NewReader(nodesBody))
-	reqSave.RemoteAddr = "127.0.0.1:54321"
-	recSave := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(recSave, reqSave)
-	if recSave.Code != http.StatusOK {
-		t.Fatalf("PUT relay nodes failed: %d %s", recSave.Code, recSave.Body.String())
+	var p2pSt models.P2PState
+	if err := json.Unmarshal(recP2P.Body.Bytes(), &p2pSt); err != nil || p2pSt.Running {
+		t.Fatalf("unexpected p2p status: %+v (%v)", p2pSt, err)
 	}
 
-	// Probe via GET /api/network/relay/probe
-	reqProbe := httptest.NewRequest(http.MethodGet, "/api/network/relay/probe", nil)
-	reqProbe.RemoteAddr = "127.0.0.1:54321"
-	recProbe := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(recProbe, reqProbe)
-	if recProbe.Code != http.StatusOK {
-		t.Fatalf("GET relay probe failed: %d", recProbe.Code)
+	// 2. Pinggy idle status
+	reqPinggy := httptest.NewRequest(http.MethodGet, "/api/network/pinggy/status", nil)
+	reqPinggy.RemoteAddr = "127.0.0.1:54321"
+	recPinggy := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recPinggy, reqPinggy)
+	if recPinggy.Code != http.StatusOK {
+		t.Fatalf("GET pinggy status failed: %d %s", recPinggy.Code, recPinggy.Body.String())
 	}
-	var probes []models.RelayNodeProbe
-	if err := json.Unmarshal(recProbe.Body.Bytes(), &probes); err != nil || len(probes) != 1 || !probes[0].Online || probes[0].NodeID != "SV-Oracle" {
-		t.Fatalf("unexpected probes: %s (%v)", recProbe.Body.String(), err)
+	var pgSt models.PinggyState
+	if err := json.Unmarshal(recPinggy.Body.Bytes(), &pgSt); err != nil || pgSt.Running {
+		t.Fatalf("unexpected pinggy status: %+v (%v)", pgSt, err)
 	}
 
-	// Auto-start via POST /api/network/tunnel/auto-start
-	autoBody := []byte(`{"localJavaPort":25565,"localBedrockPort":19132,"wantJava":true,"wantBedrock":true}`)
-	reqAuto := httptest.NewRequest(http.MethodPost, "/api/network/tunnel/auto-start", bytes.NewReader(autoBody))
-	reqAuto.RemoteAddr = "127.0.0.1:54321"
-	recAuto := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(recAuto, reqAuto)
-	if recAuto.Code != http.StatusOK {
-		t.Fatalf("POST auto-start failed: %d %s", recAuto.Code, recAuto.Body.String())
+	// 3. Reject invalid P2P room code immediately with 400
+	reqBadJoin := httptest.NewRequest(http.MethodPost, "/api/network/p2p/join", bytes.NewReader([]byte(`{"roomCode":"BAD"}`)))
+	reqBadJoin.RemoteAddr = "127.0.0.1:54321"
+	recBadJoin := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recBadJoin, reqBadJoin)
+	if recBadJoin.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid roomCode, got %d: %s", recBadJoin.Code, recBadJoin.Body.String())
 	}
-	var autoRes models.AutoTunnelResult
-	if err := json.Unmarshal(recAuto.Body.Bytes(), &autoRes); err != nil {
-		t.Fatal(err)
+
+	// 4. P2P stop works cleanly when idle
+	reqStop := httptest.NewRequest(http.MethodPost, "/api/network/p2p/stop", nil)
+	reqStop.RemoteAddr = "127.0.0.1:54321"
+	recStop := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recStop, reqStop)
+	if recStop.Code != http.StatusOK {
+		t.Fatalf("POST p2p stop failed: %d", recStop.Code)
 	}
-	if autoRes.Provider != "relay" || autoRes.NodeID != "SV-Oracle" || !autoRes.Encrypted || autoRes.JavaAddress == "" || autoRes.BedrockAddress == "" {
-		t.Fatalf("unexpected auto-start response: %+v", autoRes)
-	}
-	_ = srv.relay.Stop()
 }

@@ -31,7 +31,8 @@ type Server struct {
 	playit   *network.PlayitManager
 	bore     *network.BoreManager
 	e4mc     *network.E4mcManager
-	relay    *network.RelayManager
+	pinggy   *network.PinggyManager
+	p2p      *network.P2PManager
 	staticFS fs.FS
 
 	upgrader websocket.Upgrader
@@ -49,7 +50,8 @@ func NewServer(store *storage.Store, manager *engine.Manager, playit *network.Pl
 		playit:   playit,
 		bore:     network.NewBoreManager(),
 		e4mc:     network.NewE4mcManager(),
-		relay:    network.NewRelayManager(),
+		pinggy:   network.NewPinggyManager(),
+		p2p:      network.NewP2PManager(),
 		staticFS: staticFS,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
@@ -117,14 +119,17 @@ func (s *Server) RestartListening() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.p2p != nil {
+		_ = s.p2p.Stop()
+	}
 	if s.e4mc != nil {
 		_ = s.e4mc.Stop()
 	}
+	if s.pinggy != nil {
+		_ = s.pinggy.Stop()
+	}
 	if s.bore != nil {
 		_ = s.bore.Stop()
-	}
-	if s.relay != nil {
-		_ = s.relay.Stop()
 	}
 	s.srvMu.Lock()
 	srv := s.httpServer
@@ -199,10 +204,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/servers/{id}/backups/{filename}/restore", s.handleRestoreBackup)
 	mux.HandleFunc("DELETE /api/servers/{id}/backups/{filename}", s.handleDeleteBackup)
 
-	// Network, UPnP, bore.pub, SekaiLink Relay & playit.gg
+	// Network, UPnP, Direct P2P, e4mc, pinggy.io, bore.pub & playit.gg
 	mux.HandleFunc("GET /api/network/diagnostics", s.handleNetworkDiagnostics)
 	mux.HandleFunc("POST /api/network/upnp/map", s.handleUPnPMap)
 	mux.HandleFunc("POST /api/network/upnp/unmap", s.handleUPnPUnmap)
+	mux.HandleFunc("GET /api/network/p2p/status", s.handleP2PStatus)
+	mux.HandleFunc("POST /api/network/p2p/host", s.handleP2PHost)
+	mux.HandleFunc("POST /api/network/p2p/join", s.handleP2PJoin)
+	mux.HandleFunc("POST /api/network/p2p/stop", s.handleP2PStop)
 	mux.HandleFunc("GET /api/network/playit/status", s.handlePlayitStatus)
 	mux.HandleFunc("POST /api/network/playit/install", s.handlePlayitInstall)
 	mux.HandleFunc("POST /api/network/playit/start", s.handlePlayitStart)
@@ -210,15 +219,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/network/e4mc/status", s.handleE4mcStatus)
 	mux.HandleFunc("POST /api/network/e4mc/start", s.handleE4mcStart)
 	mux.HandleFunc("POST /api/network/e4mc/stop", s.handleE4mcStop)
+	mux.HandleFunc("GET /api/network/pinggy/status", s.handlePinggyStatus)
+	mux.HandleFunc("POST /api/network/pinggy/start", s.handlePinggyStart)
+	mux.HandleFunc("POST /api/network/pinggy/stop", s.handlePinggyStop)
 	mux.HandleFunc("GET /api/network/bore/status", s.handleBoreStatus)
 	mux.HandleFunc("POST /api/network/bore/start", s.handleBoreStart)
 	mux.HandleFunc("POST /api/network/bore/stop", s.handleBoreStop)
-	mux.HandleFunc("GET /api/network/relay/status", s.handleRelayStatus)
-	mux.HandleFunc("POST /api/network/relay/start", s.handleRelayStart)
-	mux.HandleFunc("POST /api/network/relay/stop", s.handleRelayStop)
-	mux.HandleFunc("GET /api/network/relay/nodes", s.handleGetRelayNodes)
-	mux.HandleFunc("PUT /api/network/relay/nodes", s.handleSaveRelayNodes)
-	mux.HandleFunc("GET /api/network/relay/probe", s.handleProbeRelayNodes)
 	mux.HandleFunc("POST /api/network/tunnel/auto-start", s.handleAutoStartTunnel)
 
 	// WebSocket Console
@@ -1284,40 +1290,28 @@ func (s *Server) handleBoreStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.bore.Status())
 }
 
-func (s *Server) handleRelayStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.relay.Status())
+func (s *Server) handleP2PStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.p2p.Status())
 }
 
-func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleP2PHost(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RelayAddr        string `json:"relayAddr"`
-		Secret           string `json:"secret"`
-		TLS              *bool  `json:"tls"`
-		CertPin          string `json:"certPin"`
-		LocalJavaPort    int    `json:"localJavaPort"`
-		LocalBedrockPort int    `json:"localBedrockPort"`
-		WantJava         bool   `json:"wantJava"`
-		WantBedrock      bool   `json:"wantBedrock"`
+		LocalJavaPort    int  `json:"localJavaPort"`
+		LocalBedrockPort int  `json:"localBedrockPort"`
+		WantJava         bool `json:"wantJava"`
+		WantBedrock      bool `json:"wantBedrock"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !body.WantJava && !body.WantBedrock {
+		body.WantJava = true
 	}
-	if body.LocalJavaPort <= 0 {
+	if body.WantJava && body.LocalJavaPort <= 0 {
 		body.LocalJavaPort = 25565
 	}
-	if body.LocalBedrockPort <= 0 {
+	if body.WantBedrock && body.LocalBedrockPort <= 0 {
 		body.LocalBedrockPort = 19132
 	}
-	useTLS := false
-	if body.TLS != nil {
-		useTLS = *body.TLS
-	}
-	st, err := s.relay.StartWithOptions(network.RelayClientOptions{
-		RelayAddr:        body.RelayAddr,
-		Secret:           body.Secret,
-		TLS:              useTLS,
-		CertPin:          body.CertPin,
+	st, err := s.p2p.StartHost(network.P2PHostOptions{
 		LocalJavaPort:    body.LocalJavaPort,
 		LocalBedrockPort: body.LocalBedrockPort,
 		WantJava:         body.WantJava,
@@ -1330,66 +1324,64 @@ func (s *Server) handleRelayStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st)
 }
 
-func (s *Server) handleRelayStop(w http.ResponseWriter, r *http.Request) {
-	_ = s.relay.Stop()
-	writeJSON(w, http.StatusOK, s.relay.Status())
-}
-
-func (s *Server) handleGetRelayNodes(w http.ResponseWriter, r *http.Request) {
-	nodes := s.store.GetConfig().RelayNodes
-	if nodes == nil {
-		nodes = []models.RelayNode{}
-	}
-	writeJSON(w, http.StatusOK, nodes)
-}
-
-func (s *Server) handleSaveRelayNodes(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleP2PJoin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Nodes []models.RelayNode `json:"nodes"`
+		RoomCode             string `json:"roomCode"`
+		PeerName             string `json:"peerName"`
+		PreferredJavaPort    int    `json:"preferredJavaPort"`
+		PreferredBedrockPort int    `json:"preferredBedrockPort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cleaned := make([]models.RelayNode, 0, len(body.Nodes))
-	for _, n := range body.Nodes {
-		addr := strings.TrimSpace(n.Address)
-		if addr == "" {
-			continue
-		}
-		id := strings.TrimSpace(n.ID)
-		if id == "" {
-			id = addr
-		}
-		cleaned = append(cleaned, models.RelayNode{
-			ID:      id,
-			Address: addr,
-			Secret:  strings.TrimSpace(n.Secret),
-			TLS:     n.TLS,
-			CertPin: strings.TrimSpace(n.CertPin),
-			Enabled: n.Enabled,
-		})
-	}
-	updated, err := s.store.UpdateConfig(func(cfg *models.AppConfig) {
-		cfg.RelayNodes = cleaned
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if _, err := network.NormalizeRoomCode(body.RoomCode); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	out := updated.RelayNodes
-	if out == nil {
-		out = []models.RelayNode{}
+	st, err := s.p2p.StartJoin(network.P2PJoinOptions{
+		RoomCode:             body.RoomCode,
+		PeerName:             body.PeerName,
+		PreferredJavaPort:    body.PreferredJavaPort,
+		PreferredBedrockPort: body.PreferredBedrockPort,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, st)
 }
 
-func (s *Server) handleProbeRelayNodes(w http.ResponseWriter, r *http.Request) {
-	probes := network.ProbeRelayNodes(s.store.GetConfig().RelayNodes)
-	if probes == nil {
-		probes = []models.RelayNodeProbe{}
+func (s *Server) handleP2PStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.p2p.Stop()
+	writeJSON(w, http.StatusOK, s.p2p.Status())
+}
+
+func (s *Server) handlePinggyStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.pinggy.Status())
+}
+
+func (s *Server) handlePinggyStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Region    string `json:"region"`
+		Token     string `json:"token"`
+		LocalPort int    `json:"localPort"`
 	}
-	writeJSON(w, http.StatusOK, probes)
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.LocalPort <= 0 {
+		body.LocalPort = 25565
+	}
+	st, err := s.pinggy.Start(body.Region, body.Token, body.LocalPort)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handlePinggyStop(w http.ResponseWriter, r *http.Request) {
+	_ = s.pinggy.Stop()
+	writeJSON(w, http.StatusOK, s.pinggy.Status())
 }
 
 func (s *Server) handleAutoStartTunnel(w http.ResponseWriter, r *http.Request) {
@@ -1410,56 +1402,45 @@ func (s *Server) handleAutoStartTunnel(w http.ResponseWriter, r *http.Request) {
 		body.WantJava = true
 	}
 
-	_ = s.relay.Stop()
 	_ = s.e4mc.Stop()
+	_ = s.pinggy.Stop()
 	_ = s.bore.Stop()
-
-	nodes := s.store.GetConfig().RelayNodes
-	var enabledNodes []models.RelayNode
-	for _, n := range nodes {
-		if n.Enabled && strings.TrimSpace(n.Address) != "" {
-			enabledNodes = append(enabledNodes, n)
-		}
-	}
-
-	var fallbackReason string
-	if len(enabledNodes) > 0 {
-		st, _, err := s.relay.StartBestNode(enabledNodes, body.LocalJavaPort, body.LocalBedrockPort, body.WantJava, body.WantBedrock)
-		if err == nil && st.Running {
-			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
-				Provider:       "relay",
-				NodeID:         st.NodeID,
-				LatencyMs:      st.LatencyMs,
-				Encrypted:      st.Encrypted,
-				JavaAddress:    st.JavaAddress,
-				BedrockAddress: st.BedrockAddress,
-				Relay:          &st,
-			})
-			return
-		}
-		if err != nil {
-			fallbackReason = err.Error()
-		}
-	}
 
 	if body.WantJava {
 		e4mcSt, eErr := s.e4mc.Start("", body.LocalJavaPort)
 		if eErr == nil && e4mcSt.Running {
 			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
-				Provider:       "e4mc",
-				NodeID:         "e4mc (" + e4mcSt.Region + ")",
-				LatencyMs:      e4mcSt.LatencyMs,
-				JavaAddress:    e4mcSt.Domain,
-				FallbackReason: fallbackReason,
-				E4mc:           &e4mcSt,
+				Provider:    "e4mc",
+				NodeID:      "e4mc (" + e4mcSt.Region + ")",
+				LatencyMs:   e4mcSt.LatencyMs,
+				JavaAddress: e4mcSt.Domain,
+				E4mc:        &e4mcSt,
 			})
 			return
 		}
+
+		var reason string
+		if eErr != nil {
+			reason = eErr.Error()
+		}
+
+		pinggySt, pErr := s.pinggy.Start("eu", "", body.LocalJavaPort)
+		if pErr == nil && pinggySt.Running {
+			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
+				Provider:       "pinggy",
+				NodeID:         "pinggy.io (" + pinggySt.Region + ")",
+				LatencyMs:      pinggySt.LatencyMs,
+				JavaAddress:    pinggySt.Address,
+				FallbackReason: reason,
+				Pinggy:         &pinggySt,
+			})
+			return
+		}
+
 		boreSt, bErr := s.bore.Start("bore.pub", body.LocalJavaPort, "")
 		if bErr == nil && boreSt.Running {
-			reason := fallbackReason
-			if reason == "" && eErr != nil {
-				reason = eErr.Error()
+			if pErr != nil {
+				reason = fmt.Sprintf("%s; pinggy=%v", reason, pErr)
 			}
 			writeJSON(w, http.StatusOK, models.AutoTunnelResult{
 				Provider:       "bore",
@@ -1471,14 +1452,11 @@ func (s *Server) handleAutoStartTunnel(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("tum tuneller basarisiz: VDS=(%s) e4mc=(%v) bore=(%v)", fallbackReason, eErr, bErr))
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("tum tüneller basarisiz: e4mc=(%v) pinggy=(%v) bore=(%v)", eErr, pErr, bErr))
 		return
 	}
 
-	if fallbackReason == "" {
-		fallbackReason = "saf Bedrock (UDP) icin Ag & Tunel sekmesinden bir VDS koprusu ekleyin veya playit.gg baslatin"
-	}
-	writeError(w, http.StatusBadGateway, fallbackReason)
+	writeError(w, http.StatusBadGateway, "saf Bedrock (UDP) icin Ag & Tunel sekmesinden Direkt P2P Odasi acin veya playit.gg baslatin")
 }
 
 // --- WebSocket ---

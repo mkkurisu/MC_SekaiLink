@@ -107,6 +107,7 @@ export interface AndroidBridge {
   installArm64Jre(): void;
   importArm64JreFile?: () => void;
   copyToClipboard?: (text: string) => boolean;
+  readFromClipboard?: () => string;
   stopLocalService(): void;
   requestBatteryUnrestricted(): void;
 }
@@ -151,4 +152,24 @@ export async function copyTextSafe(text: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function pasteTextSafe(): Promise<string> {
+  const bridge = getAndroidBridge();
+  if (bridge?.readFromClipboard) {
+    try {
+      const val = bridge.readFromClipboard();
+      if (val) return val;
+    } catch {
+      // fall through
+    }
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      return await navigator.clipboard.readText();
+    }
+  } catch {
+    // ignore clipboard permission errors
+  }
+  return '';
 }

@@ -8,6 +8,7 @@ require (
 	github.com/quic-go/quic-go v0.65.0
 	github.com/shirou/gopsutil/v4 v4.25.2
 	github.com/wailsapp/wails/v2 v2.17.1
+	golang.org/x/crypto v0.57.0
 	golang.org/x/crypto/x509roots/fallback v0.0.0-20261115193255-739070949446
 )
 
@@ -41,7 +42,6 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.22 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
