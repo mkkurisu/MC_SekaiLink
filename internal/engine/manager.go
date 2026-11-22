@@ -325,6 +325,9 @@ func (m *Manager) Start(id string) error {
 		delete(m.procs, id)
 		wasStopping := proc.stopping
 		m.mu.Unlock()
+		if proc.cmd.Process != nil {
+			ClearProcessMetrics(int32(proc.cmd.Process.Pid))
+		}
 
 		cs.mu.Lock()
 		cs.players = make(map[string]models.PlayerInfo)

@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -33,6 +34,7 @@ class ServerForegroundService : Service() {
 
     private var daemonProcess: Process? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -213,10 +215,29 @@ class ServerForegroundService : Service() {
     }
 
     private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MCSekaiLink::ServerWakeLock").apply {
-            acquire()
+        if (wakeLock?.isHeld != true) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MCSekaiLink::ServerWakeLock").apply {
+                acquire()
+            }
+        }
+        if (wifiLock?.isHeld != true) {
+            try {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                if (wm != null) {
+                    val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                    } else {
+                        @Suppress("DEPRECATION")
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                    }
+                    wifiLock = wm.createWifiLock(mode, "MCSekaiLink::ServerWifiLock").apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                }
+            } catch (_: Exception) {
+            }
         }
     }
 
@@ -228,6 +249,14 @@ class ServerForegroundService : Service() {
         } catch (_: Exception) {
         }
         wakeLock = null
+
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (_: Exception) {
+        }
+        wifiLock = null
     }
 
     private fun createNotificationChannel() {
