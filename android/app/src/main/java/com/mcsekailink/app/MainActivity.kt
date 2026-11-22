@@ -22,6 +22,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -47,13 +48,8 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            JreManager.importJreFromUri(this, uri) { msg ->
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
-                    if (JreManager.isInstalled(this@MainActivity)) {
-                        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('sekai-jre-updated'))", null)
-                    }
-                }
+            JreManager.importJreFromUri(this, uri) { msg, done, installed ->
+                notifyJreStatus(msg, done, installed)
             }
         }
     }
@@ -118,6 +114,26 @@ class MainActivity : AppCompatActivity() {
 
         showLoadingSplash()
         waitForCoreAndLoad()
+    }
+
+    private fun notifyJreStatus(msg: String, done: Boolean, installed: Boolean) {
+        runOnUiThread {
+            Toast.makeText(this@MainActivity, msg, if (done) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
+            val detail = JSONObject().apply {
+                put("message", msg)
+                put("done", done)
+                put("installed", installed)
+            }.toString()
+            val js = buildString {
+                append("window.dispatchEvent(new CustomEvent('sekai-jre-status', { detail: ")
+                append(detail)
+                append(" }));")
+                if (installed) {
+                    append("window.dispatchEvent(new CustomEvent('sekai-jre-updated'));")
+                }
+            }
+            webView.evaluateJavascript(js, null)
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -200,13 +216,8 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun installArm64Jre() {
-            JreManager.installArm64Jre(this@MainActivity) { msg ->
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
-                    if (JreManager.isInstalled(this@MainActivity)) {
-                        webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('sekai-jre-updated'))", null)
-                    }
-                }
+            JreManager.installArm64Jre(this@MainActivity) { msg, done, installed ->
+                notifyJreStatus(msg, done, installed)
             }
         }
 

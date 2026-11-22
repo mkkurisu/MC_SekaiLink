@@ -10,13 +10,20 @@ android {
     defaultConfig {
         applicationId = "com.mcsekailink.app"
         minSdk = 26
-        targetSdk = 34
+        // targetSdk 28 is required so Android 10+ SELinux allows executing extracted JRE binaries
+        // (files/jre/bin/java) from app data storage (untrusted_app_27 vs untrusted_app W^X restriction).
+        targetSdk = 28
         versionCode = 1
         versionName = "0.1.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+    }
+
+    lint {
+        abortOnError = false
+        disable += "ExpiredTargetSdkVersion"
     }
 
     buildTypes {

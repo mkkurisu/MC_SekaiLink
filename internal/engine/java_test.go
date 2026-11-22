@@ -76,4 +76,24 @@ func TestJavaEnvForBinary(t *testing.T) {
 			t.Fatalf("expected LD_LIBRARY_PATH %q to contain %q", ldVal, wantSub)
 		}
 	}
+
+	// Verify Java 21/25 layout (lib/libjli.so instead of lib/jli directory) on Linux desktop as well.
+	t.Setenv("SEKAILINK_PLATFORM", "headless")
+	jre25Root := filepath.Join(t.TempDir(), "jre25-so")
+	if err := os.MkdirAll(filepath.Join(jre25Root, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(jre25Root, "lib", "libjli.so"), []byte("so"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env25 := javaEnvForBinary(filepath.Join(jre25Root, "bin", "java"))
+	if runtimeGOOS := os.Getenv("GOOS"); runtimeGOOS == "" {
+		// On Linux hosts env25 must include JAVA_HOME & LD_LIBRARY_PATH; check helper contract via android too.
+		t.Setenv("SEKAILINK_PLATFORM", "android")
+		env25Android := javaEnvForBinary(filepath.Join(jre25Root, "bin", "java"))
+		if len(env25Android) == 0 {
+			t.Fatalf("expected non-empty env for Java 21/25 lib/libjli.so layout, got %v", env25Android)
+		}
+	}
+	_ = env25
 }

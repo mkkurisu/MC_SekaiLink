@@ -245,8 +245,10 @@ func javaEnvForBinary(javaPath string) []string {
 		return nil
 	}
 	jreRoot := filepath.Dir(filepath.Dir(filepath.Clean(javaPath)))
-	_, hasJLI := os.Stat(filepath.Join(jreRoot, "lib", "jli"))
-	if DetectPlatformMode() != "android" && (runtime.GOOS != "linux" || hasJLI != nil) {
+	_, hasJLIDir := os.Stat(filepath.Join(jreRoot, "lib", "jli"))
+	_, hasJLIFile := os.Stat(filepath.Join(jreRoot, "lib", "libjli.so"))
+	hasJLI := hasJLIDir == nil || hasJLIFile == nil
+	if DetectPlatformMode() != "android" && (runtime.GOOS != "linux" || !hasJLI) {
 		return nil
 	}
 	libPaths := []string{
@@ -279,6 +281,9 @@ func probeJavaVersion(javaPath string) string {
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if DetectPlatformMode() == "android" {
+			fmt.Fprintf(os.Stderr, "[MC SekaiLink] probeJavaVersion failed (%s): %v | output=%s\n", javaPath, err, strings.TrimSpace(string(out)))
+		}
 		return ""
 	}
 	text := string(out)

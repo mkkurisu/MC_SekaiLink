@@ -43,6 +43,24 @@ export const SettingsPage: React.FC<Props> = ({ server, system, lang, onRefresh,
   ];
 
   useEffect(() => {
+    const onJreStatus = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ message?: string; done?: boolean; installed?: boolean }>).detail;
+      if (!detail) return;
+      if (detail.message) {
+        setMsg(detail.message);
+      }
+      if (typeof detail.done === 'boolean') {
+        setInstallingJava(!detail.done);
+      }
+      if (detail.done && detail.installed) {
+        onRefresh();
+      }
+    };
+    window.addEventListener('sekai-jre-status', onJreStatus);
+    return () => window.removeEventListener('sekai-jre-status', onJreStatus);
+  }, [onRefresh]);
+
+  useEffect(() => {
     if (!server) return;
     setName(server.name);
     setMemoryMB(server.memoryMB);
@@ -136,8 +154,9 @@ export const SettingsPage: React.FC<Props> = ({ server, system, lang, onRefresh,
   const handleInstallJava = async () => {
     const bridge = getAndroidBridge();
     if (bridge) {
-      bridge.installArm64Jre();
+      setInstallingJava(true);
       setMsg(t.androidJavaStarted);
+      bridge.installArm64Jre();
       return;
     }
     setInstallingJava(true);
